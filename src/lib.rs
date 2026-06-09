@@ -9,7 +9,7 @@ pub const H: f32 = 800.0;
 
 const NB: usize = 64; // player bullets
 const NE: usize = 32; // enemies
-const NS: usize = 96; // enemy shots
+const NS: usize = 128; // enemy shots
 const NP: usize = 8; // powerups
 const NT: usize = 160; // particles
 const MAXD: usize = 420; // max draw commands
@@ -41,6 +41,7 @@ const EV_POW: f32 = 4.0;
 const EV_HIT: f32 = 5.0;
 const EV_BOSS: f32 = 6.0;
 const EV_MISSILE: f32 = 7.0;
+const EV_SECRET: f32 = 8.0; // boss unleashes its secret weapon
 
 #[derive(Clone, Copy)]
 struct Bullet {
@@ -73,6 +74,8 @@ struct Enemy {
 #[derive(Clone, Copy)]
 struct Shot {
     alive: bool,
+    kind: u8, // 0 plasma ball, 1 cluster shell (bursts when t expires), 2 bomb
+    t: f32,   // cluster fuse
     x: f32,
     y: f32,
     vx: f32,
@@ -151,7 +154,7 @@ const ZE: Enemy = Enemy {
     ty: 0.0,
     pat: 0,
 };
-const ZS: Shot = Shot { alive: false, x: 0.0, y: 0.0, vx: 0.0, vy: 0.0 };
+const ZS: Shot = Shot { alive: false, kind: 0, t: 0.0, x: 0.0, y: 0.0, vx: 0.0, vy: 0.0 };
 const ZP: Pw = Pw { alive: false, kind: 0, x: 0.0, y: 0.0 };
 const ZT: Pt = Pt {
     alive: false,
@@ -286,11 +289,36 @@ fn spark(parts: &mut [Pt; NT], rng: &mut u32, x: f32, y: f32, n: u32) {
 }
 
 fn spawn_shot(shots: &mut [Shot; NS], x: f32, y: f32, vx: f32, vy: f32) {
+    spawn_shot_k(shots, 0, 0.0, x, y, vx, vy);
+}
+
+fn spawn_shot_k(shots: &mut [Shot; NS], kind: u8, t: f32, x: f32, y: f32, vx: f32, vy: f32) {
     for s in shots.iter_mut() {
         if !s.alive {
-            *s = Shot { alive: true, x, y, vx, vy };
+            *s = Shot { alive: true, kind, t, x, y, vx, vy };
             return;
         }
+    }
+}
+
+// fan of `n` shots aimed at the player, `step` radians apart
+fn aimed_spread(shots: &mut [Shot; NS], x: f32, y: f32, px: f32, py: f32, n: i32, step: f32, speed: f32) {
+    let dx = px - x;
+    let dy = (py - y).max(40.0);
+    let len = (dx * dx + dy * dy).sqrt().max(1.0);
+    let (ux, uy) = (dx / len, dy / len);
+    let half = (n - 1) / 2;
+    for k in -half..=half {
+        let a = k as f32 * step;
+        let (s, c) = (a.sin(), a.cos());
+        spawn_shot(shots, x, y + 24.0, (ux * c - uy * s) * speed, (ux * s + uy * c) * speed);
+    }
+}
+
+fn radial(shots: &mut [Shot; NS], x: f32, y: f32, n: u32, phase: f32, speed: f32) {
+    for k in 0..n {
+        let a = k as f32 / n as f32 * PI * 2.0 + phase;
+        spawn_shot(shots, x, y, a.cos() * speed, a.sin() * speed);
     }
 }
 
@@ -336,11 +364,14 @@ fn diff(g: &Game) -> u32 {
 
 fn start_wave(g: &mut Game, h: &mut [f32; 24]) {
     if g.wave >= WAVES_PER_SECTOR {
-        // sector boss guards the checkpoint
+        // sector boss guards the checkpoint — each sector fields its own machine
         g.spawn_left = 0;
+        // per-boss hull multiplier (fortress/dragon are tanks, the ace is nimble)
+        const HPM: [f32; 10] = [1.0, 1.35, 0.85, 1.0, 1.05, 0.9, 1.0, 1.0, 1.05, 1.15];
+        let s = g.sector.min(NSECTORS - 1) as usize;
         for e in g.enemies.iter_mut() {
             if !e.alive {
-                let hp = 50.0 + (g.sector * WAVES_PER_SECTOR + WAVES_PER_SECTOR) as f32 * 4.5;
+                let hp = (50.0 + (g.sector * WAVES_PER_SECTOR + WAVES_PER_SECTOR) as f32 * 4.5) * HPM[s];
                 *e = Enemy {
                     alive: true,
                     kind: 3,
@@ -354,7 +385,12 @@ fn start_wave(g: &mut Game, h: &mut [f32; 24]) {
                     cd: 1.6,
                     phase: 0.0,
                     bx: W / 2.0,
-                    ty: 150.0,
+                    ty: match s {
+                        1 => 130.0, // fortress sits back
+                        4 => 120.0, // artillery lobs from high up
+                        2 => 140.0,
+                        _ => 150.0,
+                    },
                     pat: 0,
                 };
                 break;
@@ -490,6 +526,19 @@ pub extern "C" fn init(seed: u32) {
 #[unsafe(no_mangle)]
 pub extern "C" fn set_checkpoint(sector: u32) {
     game().start_sector = sector.min(NSECTORS - 1);
+}
+
+// Debug/testing: start playing right at a sector's boss (JS: ?boss=N).
+#[unsafe(no_mangle)]
+pub extern "C" fn jump_to_boss(sector: u32) {
+    let g = game();
+    let h = hud();
+    g.start_sector = sector.min(NSECTORS - 1);
+    reset_game(g, h);
+    g.wave = WAVES_PER_SECTOR;
+    g.enemies = [ZE; NE];
+    g.spawn_left = 0;
+    start_wave(g, h);
 }
 
 #[unsafe(no_mangle)]
@@ -718,36 +767,212 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
                     }
                 }
                 _ => {
-                    // boss gunship
-                    if e.y < e.ty {
+                    // sector boss — variant = sector (a boss only flies in its own sector).
+                    // e.vy doubles as a "still descending" flag; e.phase flips to 1 once
+                    // the secret weapon is unleashed; e.bx is per-variant scratch
+                    // (dash target / glide target / spiral angle).
+                    let v = g.sector.min(NSECTORS - 1);
+                    if e.vy > 0.0 {
                         e.y += e.vy * dt;
+                        if e.y >= e.ty {
+                            e.y = e.ty;
+                            e.vy = 0.0;
+                            e.t = 0.0; // movement patterns start from a neutral pose
+                        }
                     } else {
-                        e.x = W / 2.0 + (e.t * 0.55).sin() * 150.0;
-                    }
-                    if e.cd <= 0.0 && e.y > 40.0 {
-                        e.pat += 1;
-                        if e.pat % 2 == 1 {
-                            e.cd = 1.4;
-                            let dx = ppx - e.x;
-                            let dy = (ppy - e.y).max(40.0);
-                            let len = (dx * dx + dy * dy).sqrt().max(1.0);
-                            let (ux, uy) = (dx / len, dy / len);
-                            for k in -2..=2i32 {
-                                let a = k as f32 * 0.16;
-                                let (s, c) = (a.sin(), a.cos());
-                                spawn_shot(
-                                    &mut g.shots,
-                                    e.x,
-                                    e.y + 30.0,
-                                    (ux * c - uy * s) * 250.0,
-                                    (ux * s + uy * c) * 250.0,
-                                );
+                        match v {
+                            1 => e.x = W / 2.0 + (e.t * 0.3).sin() * 95.0,
+                            2 => {
+                                // ace: hard dashes between random points
+                                if (e.x - e.bx).abs() < 12.0 {
+                                    e.bx = 60.0 + rnd(&mut g.rng) * (W - 120.0);
+                                }
+                                e.x += if e.bx > e.x { 300.0 } else { -300.0 } * dt;
+                                e.y = e.ty + (e.t * 2.4).sin() * 18.0;
                             }
-                        } else {
-                            e.cd = 2.1;
-                            for k in 0..14 {
-                                let a = k as f32 / 14.0 * PI * 2.0 + e.t;
-                                spawn_shot(&mut g.shots, e.x, e.y, a.cos() * 140.0, a.sin() * 140.0);
+                            4 => e.x = W / 2.0 + (e.t * 0.4).sin() * 120.0,
+                            5 => {
+                                // phantom: glide to a point, then pick another
+                                let dx = e.bx - e.x;
+                                let dy = e.ty - e.y;
+                                let len = (dx * dx + dy * dy).sqrt();
+                                if len < 10.0 {
+                                    e.bx = 60.0 + rnd(&mut g.rng) * (W - 120.0);
+                                    e.ty = 110.0 + rnd(&mut g.rng) * 150.0;
+                                } else {
+                                    e.x += dx / len * 170.0 * dt;
+                                    e.y += dy / len * 170.0 * dt;
+                                }
+                            }
+                            6 => {
+                                // sentinel: figure-8
+                                e.x = W / 2.0 + (e.t * 0.7).sin() * 150.0;
+                                e.y = e.ty + (e.t * 1.4).sin() * 40.0;
+                            }
+                            7 => e.x = W / 2.0 + (e.t * 0.45).sin() * 190.0,
+                            9 => e.x = W / 2.0 + (e.t * 0.5).sin() * 130.0,
+                            _ => e.x = W / 2.0 + (e.t * 0.55).sin() * 150.0,
+                        }
+                    }
+                    // secret weapon unleashed below 35% hull
+                    if matches!(v, 1 | 4 | 6 | 8 | 9) && e.phase < 0.5 && e.hp < e.maxhp * 0.35 {
+                        e.phase = 1.0;
+                        e.cd = 0.8;
+                        push_ev(h, EV_SECRET);
+                    }
+                    let secret = e.phase > 0.5;
+                    if e.vy <= 0.0 && e.cd <= 0.0 {
+                        e.pat += 1;
+                        match v {
+                            0 => {
+                                // marsh stalker: aimed bursts, slow mine ring
+                                if e.pat % 3 == 0 {
+                                    e.cd = 2.2;
+                                    radial(&mut g.shots, e.x, e.y, 10, e.t, 130.0);
+                                } else {
+                                    e.cd = 1.5;
+                                    aimed_spread(&mut g.shots, e.x, e.y, ppx, ppy, 3, 0.2, 230.0);
+                                }
+                            }
+                            1 => {
+                                // desert fortress: bomb columns; secret = sandstorm barrage
+                                if secret {
+                                    e.cd = 0.9;
+                                    for _ in 0..5 {
+                                        let bx = 30.0 + rnd(&mut g.rng) * (W - 60.0);
+                                        spawn_shot_k(&mut g.shots, 2, 0.0, bx, e.y + 30.0, 0.0, 330.0);
+                                    }
+                                } else {
+                                    e.cd = 1.7;
+                                    for k in -1..=1i32 {
+                                        spawn_shot_k(&mut g.shots, 2, 0.0, ppx + k as f32 * 46.0, e.y + 30.0, 0.0, 300.0);
+                                    }
+                                }
+                            }
+                            2 => {
+                                // wagah ace: rapid twin guns while dashing, quick fans
+                                if e.pat % 4 == 0 {
+                                    e.cd = 1.1;
+                                    aimed_spread(&mut g.shots, e.x, e.y, ppx, ppy, 3, 0.26, 300.0);
+                                } else {
+                                    e.cd = 0.85;
+                                    aimed_spread(&mut g.shots, e.x - 12.0, e.y, ppx, ppy, 1, 0.0, 310.0);
+                                    aimed_spread(&mut g.shots, e.x + 12.0, e.y, ppx, ppy, 1, 0.0, 310.0);
+                                }
+                            }
+                            4 => {
+                                // ridge artillery: cluster shells; secret = avalanche fan
+                                let dx = ppx - e.x;
+                                let dy = (ppy - e.y).max(60.0);
+                                let len = (dx * dx + dy * dy).sqrt().max(1.0);
+                                let (ux, uy) = (dx / len, dy / len);
+                                if secret {
+                                    e.cd = 1.6;
+                                    for k in -1..=1i32 {
+                                        let a = k as f32 * 0.3;
+                                        let (s, c) = (a.sin(), a.cos());
+                                        let fuse = 0.8 + rnd(&mut g.rng) * 0.5;
+                                        spawn_shot_k(&mut g.shots, 1, fuse, e.x, e.y + 24.0, (ux * c - uy * s) * 165.0, (ux * s + uy * c) * 165.0);
+                                    }
+                                } else if e.pat % 2 == 1 {
+                                    e.cd = 2.4;
+                                    let fuse = 0.9 + rnd(&mut g.rng) * 0.4;
+                                    spawn_shot_k(&mut g.shots, 1, fuse, e.x, e.y + 24.0, ux * 160.0, uy * 160.0);
+                                } else {
+                                    e.cd = 1.4;
+                                    aimed_spread(&mut g.shots, e.x, e.y, ppx, ppy, 1, 0.0, 240.0);
+                                }
+                            }
+                            5 => {
+                                // white phantom: fans flung downward while ghosting
+                                e.cd = 1.5;
+                                for k in -2..=2i32 {
+                                    let a = PI / 2.0 + k as f32 * 0.32;
+                                    spawn_shot(&mut g.shots, e.x, e.y + 16.0, a.cos() * 195.0, a.sin() * 195.0);
+                                }
+                            }
+                            6 => {
+                                // lake sentinel: rotating spiral; secret = twin whirlwind
+                                if secret {
+                                    e.cd = 0.09;
+                                    e.bx += 0.5;
+                                    spawn_shot(&mut g.shots, e.x, e.y, e.bx.cos() * 200.0, e.bx.sin() * 200.0);
+                                    spawn_shot(&mut g.shots, e.x, e.y, -e.bx.cos() * 200.0, -e.bx.sin() * 200.0);
+                                } else {
+                                    e.cd = 0.13;
+                                    e.bx += 0.45;
+                                    spawn_shot(&mut g.shots, e.x, e.y, e.bx.cos() * 165.0, e.bx.sin() * 165.0);
+                                }
+                            }
+                            7 => {
+                                // razor wing: bullet walls with one gap to thread
+                                if e.pat % 2 == 1 {
+                                    e.cd = 2.6;
+                                    let gap = 60.0 + rnd(&mut g.rng) * (W - 120.0);
+                                    let mut x = 24.0;
+                                    while x < W {
+                                        if (x - gap).abs() > 55.0 {
+                                            spawn_shot(&mut g.shots, x, e.y + 34.0, 0.0, 210.0);
+                                        }
+                                        x += 36.0;
+                                    }
+                                } else {
+                                    e.cd = 1.4;
+                                    aimed_spread(&mut g.shots, e.x, e.y, ppx, ppy, 3, 0.22, 250.0);
+                                }
+                            }
+                            8 => {
+                                // storm bringer: snap shots + rings; secret = lightning rain
+                                if secret {
+                                    e.cd = 0.28;
+                                    for _ in 0..2 {
+                                        let x = rnd(&mut g.rng) * W;
+                                        spawn_shot(&mut g.shots, x, -10.0, (rnd(&mut g.rng) - 0.5) * 80.0, 300.0);
+                                    }
+                                } else if e.pat % 4 == 3 {
+                                    e.cd = 1.4;
+                                    radial(&mut g.shots, e.x, e.y, 12, e.t, 145.0);
+                                } else {
+                                    e.cd = 0.62;
+                                    aimed_spread(&mut g.shots, e.x, e.y, ppx, ppy, 1, 0.0, 280.0);
+                                }
+                            }
+                            9 => {
+                                // dragon command: escalates through hull phases;
+                                // secret = dragon fury (everything at once)
+                                let hpf = e.hp / e.maxhp;
+                                if secret {
+                                    e.cd = 1.15;
+                                    match e.pat % 3 {
+                                        0 => radial(&mut g.shots, e.x, e.y, 16, e.t, 160.0),
+                                        1 => {
+                                            let dx = ppx - e.x;
+                                            let dy = (ppy - e.y).max(60.0);
+                                            let len = (dx * dx + dy * dy).sqrt().max(1.0);
+                                            spawn_shot_k(&mut g.shots, 1, 0.9, e.x, e.y + 24.0, dx / len * 170.0, dy / len * 170.0);
+                                        }
+                                        _ => aimed_spread(&mut g.shots, e.x, e.y, ppx, ppy, 5, 0.18, 270.0),
+                                    }
+                                } else if hpf > 0.66 {
+                                    e.cd = 1.4;
+                                    aimed_spread(&mut g.shots, e.x, e.y, ppx, ppy, 5, 0.16, 250.0);
+                                } else if e.pat % 2 == 0 {
+                                    e.cd = 1.9;
+                                    radial(&mut g.shots, e.x, e.y, 14, e.t, 145.0);
+                                } else {
+                                    e.cd = 1.35;
+                                    aimed_spread(&mut g.shots, e.x, e.y, ppx, ppy, 3, 0.22, 260.0);
+                                }
+                            }
+                            _ => {
+                                // akhnoor warlord (3): the classic gunship
+                                if e.pat % 2 == 1 {
+                                    e.cd = 1.4;
+                                    aimed_spread(&mut g.shots, e.x, e.y + 6.0, ppx, ppy, 5, 0.16, 250.0);
+                                } else {
+                                    e.cd = 2.1;
+                                    radial(&mut g.shots, e.x, e.y, 14, e.t, 140.0);
+                                }
                             }
                         }
                     }
@@ -797,14 +1022,26 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
         }
 
         // ---- enemy shots ----
-        for s in g.shots.iter_mut() {
-            if !s.alive {
+        for si in 0..NS {
+            if !g.shots[si].alive {
                 continue;
             }
-            s.x += s.vx * dt;
-            s.y += s.vy * dt;
+            g.shots[si].x += g.shots[si].vx * dt;
+            g.shots[si].y += g.shots[si].vy * dt;
+            if g.shots[si].kind == 1 {
+                // cluster shell: burst into a fragment ring when the fuse runs out
+                g.shots[si].t -= dt;
+                if g.shots[si].t <= 0.0 {
+                    let (sx, sy) = (g.shots[si].x, g.shots[si].y);
+                    g.shots[si].alive = false;
+                    radial(&mut g.shots, sx, sy, 8, rnd(&mut g.rng) * PI, 170.0);
+                    boom(&mut g.parts, &mut g.rng, sx, sy, 8, false);
+                    push_ev(h, EV_BOOM);
+                }
+            }
+            let s = g.shots[si];
             if s.y < -20.0 || s.y > H + 20.0 || s.x < -20.0 || s.x > W + 20.0 {
-                s.alive = false;
+                g.shots[si].alive = false;
             }
         }
 
@@ -999,7 +1236,9 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
             1 => emit(&mut n, D_JET, e.x, e.y, (e.vx * 0.004).clamp(-0.5, 0.5), 1.0, 0.0),
             2 => emit(&mut n, D_HELI, e.x, e.y, 0.0, 1.0, e.t),
             _ => {
-                emit(&mut n, D_BOSS, e.x, e.y, 0.0, 1.0, e.t);
+                // rot carries the variant (+0.5 once the secret weapon is live)
+                let v = g.sector.min(NSECTORS - 1) as f32 + if e.phase > 0.5 { 0.5 } else { 0.0 };
+                emit(&mut n, D_BOSS, e.x, e.y, v, 1.0, e.t);
                 boss_hp = e.hp;
                 boss_max = e.maxhp;
             }
@@ -1007,7 +1246,7 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
     }
     for s in g.shots.iter() {
         if s.alive {
-            emit(&mut n, D_SHOT, s.x, s.y, 0.0, 1.0, 0.0);
+            emit(&mut n, D_SHOT, s.x, s.y, 0.0, 1.0, s.kind as f32);
         }
     }
     if g.mode == 1 || g.mode == 3 {

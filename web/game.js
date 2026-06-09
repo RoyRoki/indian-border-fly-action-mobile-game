@@ -39,6 +39,12 @@ let savedCp = Math.min(+(localStorage.getItem(cpKey) || 0), SECTORS.length - 1);
 const cpOverride = new URLSearchParams(location.search).get('cp');
 if (cpOverride !== null) savedCp = Math.min(Math.max(+cpOverride || 0, 0), SECTORS.length - 1);
 wasm.set_checkpoint(savedCp);
+// ?boss=N jumps straight to a sector's boss fight (testing/screenshots)
+const bossOverride = new URLSearchParams(location.search).get('boss');
+if (bossOverride !== null) wasm.jump_to_boss(Math.min(Math.max(+bossOverride || 0, 0), SECTORS.length - 1));
+// ?ff=N fast-forwards N engine frames before rendering (testing/screenshots)
+const ff = +(new URLSearchParams(location.search).get('ff') || 0);
+for (let i = 0; i < ff; i++) wasm.frame(1 / 60, W / 2, H - 140, 0);
 const mem = () => new Float32Array(wasm.memory.buffer);
 const DRAW_PTR = wasm.draw_ptr() / 4;
 const HUD_PTR = wasm.hud_ptr() / 4;
@@ -99,6 +105,9 @@ addEventListener('keyup', e => {
 
 // ---------- leaderboard & pilot profile ----------
 const profKey = 'borderhawk_profile';
+// campaign completions → gold stars (max 5); old saves had only a completed flag
+const winsKey = 'borderhawk_wins';
+let wins = Math.min(5, +(localStorage.getItem(winsKey) || 0) || (localStorage.getItem('borderhawk_completed') ? 1 : 0));
 let profile = null;
 try { profile = JSON.parse(localStorage.getItem(profKey) || 'null'); } catch { /* corrupt */ }
 let pendingScore = null; // {score, sector} awaiting profile entry
@@ -114,7 +123,7 @@ async function postScore(s) {
     const r = await fetch('/api/leaderboard', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: profile.name, city: profile.city, score: s.score, sector: s.sector }),
+      body: JSON.stringify({ name: profile.name, city: profile.city, score: s.score, sector: s.sector, wins }),
     });
     submitState = r.ok ? 'ok' : 'fail';
   } catch { submitState = 'fail'; }
@@ -156,9 +165,12 @@ lbbtn.onclick = async () => {
     $('lbrows').innerHTML = top.map((t, i) => {
       const me = profile?.name && t.name.toLowerCase() === profile.name.toLowerCase()
         && (t.city || '').toLowerCase() === (profile.city || '').toLowerCase();
+      const stars = t.wins > 0
+        ? ` <span class="stars" title="secured the whole border ×${Math.min(t.wins, 5)}">${'★'.repeat(Math.min(t.wins, 5))}</span>`
+        : '';
       return `<div class="row${me ? ' me' : ''}">
         <span class="rank">${medals[i] || i + 1}</span>
-        <span class="who">${esc(t.name)} <small>· ${esc(t.city)} · S${(t.sector | 0) + 1}</small></span>
+        <span class="who">${esc(t.name)}${stars} <small>· ${esc(t.city)} · S${(t.sector | 0) + 1}</small></span>
         <span class="pts">${t.score}</span></div>`;
     }).join('');
   } catch { $('lbstatus').textContent = 'Could not load leaderboard.'; }
@@ -200,6 +212,10 @@ const SFX = {
   5: () => { noise(0.35, 0.14, 900); tone(200, 0.3, 'sawtooth', 0.07, -150); }, // player hit
   6: () => { tone(98, 0.7, 'sawtooth', 0.08, -20); setTimeout(() => tone(98, 0.7, 'sawtooth', 0.08, -20), 500); }, // boss warning
   7: () => tone(320, 0.18, 'sawtooth', 0.03, 300),           // missile
+  8: () => { // secret weapon klaxon
+    for (const d of [0, 220, 440]) setTimeout(() => tone(180, 0.3, 'sawtooth', 0.1, -90), d);
+    noise(0.5, 0.1, 500);
+  },
 };
 
 // ---------- procedural sprites ----------
@@ -273,22 +289,196 @@ const sprHeliBody = sprite(64, 60, g => {
   g.beginPath(); g.arc(0, -24, 4, 0, Math.PI * 2); g.fill();
 });
 
-const sprBoss = sprite(150, 120, g => {
-  g.fillStyle = '#454d44';
-  g.beginPath(); g.ellipse(0, 0, 34, 46, 0, 0, Math.PI * 2); g.fill();
-  g.fillStyle = '#39403a';
-  g.fillRect(-66, -8, 132, 14);
-  g.fillStyle = '#2b3129';
-  g.beginPath(); g.ellipse(-52, -1, 9, 16, 0, 0, Math.PI * 2); g.fill();
-  g.beginPath(); g.ellipse(52, -1, 9, 16, 0, 0, Math.PI * 2); g.fill();
-  g.fillStyle = '#161b21';
-  g.beginPath(); g.ellipse(0, 18, 13, 15, 0, 0, Math.PI * 2); g.fill();
-  g.fillStyle = '#741f1f';
-  g.beginPath(); g.arc(-20, -28, 6, 0, Math.PI * 2); g.fill();
-  g.beginPath(); g.arc(20, -28, 6, 0, Math.PI * 2); g.fill();
-  g.fillStyle = '#5d6650';
-  g.fillRect(-10, -52, 20, 24);
-});
+// ---------- the ten sector bosses ----------
+// One unique machine per sector; some hide a secret weapon that fires
+// when their hull drops below 35% (the engine flags it via the draw rot).
+const BOSSES = [
+  { name: 'MARSH STALKER' },
+  { name: 'DESERT FORTRESS', secret: 'SANDSTORM BARRAGE' },
+  { name: 'WAGAH ACE' },
+  { name: 'AKHNOOR WARLORD' },
+  { name: 'RIDGE ARTILLERY', secret: 'AVALANCHE SHELLS' },
+  { name: 'WHITE PHANTOM' },
+  { name: 'LAKE SENTINEL', secret: 'TWIN WHIRLWIND' },
+  { name: 'RAZOR WING' },
+  { name: 'STORM BRINGER', secret: 'LIGHTNING STORM' },
+  { name: 'DRAGON COMMAND', secret: 'DRAGON FURY' },
+];
+
+const sprBosses = [
+  // 0 MARSH STALKER — Sir Creek hover gunboat
+  sprite(150, 120, g => {
+    g.fillStyle = '#3a4a43';
+    g.beginPath(); g.ellipse(0, 22, 52, 15, 0, 0, Math.PI * 2); g.fill(); // skirt
+    g.fillStyle = '#5f7268';
+    g.beginPath(); g.ellipse(0, -2, 40, 26, 0, 0, Math.PI * 2); g.fill(); // hull
+    g.fillStyle = '#4c5c54'; g.fillRect(-40, -6, 80, 10);
+    for (const sx of [-46, 46]) { // side fan pods
+      g.fillStyle = '#2f3b36'; g.beginPath(); g.arc(sx, 2, 16, 0, Math.PI * 2); g.fill();
+      g.fillStyle = '#1d2522'; g.beginPath(); g.arc(sx, 2, 11, 0, Math.PI * 2); g.fill();
+    }
+    g.fillStyle = '#9fd4c8';
+    g.beginPath(); g.ellipse(0, -16, 7, 5, 0, 0, Math.PI * 2); g.fill(); // cockpit
+    g.fillStyle = '#28312c'; g.fillRect(-4, 18, 8, 16); // bow gun
+    g.fillStyle = '#c23b3b';
+    for (const sx of [-30, 30]) { g.beginPath(); g.arc(sx, -16, 3, 0, Math.PI * 2); g.fill(); }
+  }),
+  // 1 DESERT FORTRESS — Longewala flying slab
+  sprite(150, 120, g => {
+    g.fillStyle = '#c9b078';
+    g.beginPath();
+    g.moveTo(-66, 0); g.lineTo(-44, -32); g.lineTo(44, -32); g.lineTo(66, 0);
+    g.lineTo(44, 32); g.lineTo(-44, 32); g.closePath(); g.fill();
+    g.fillStyle = '#a8925e';
+    g.beginPath();
+    g.moveTo(-48, 0); g.lineTo(-32, -22); g.lineTo(32, -22); g.lineTo(48, 0);
+    g.lineTo(32, 22); g.lineTo(-32, 22); g.closePath(); g.fill();
+    for (const sx of [-34, 34]) { // turrets, barrels toward the player
+      g.fillStyle = '#8a774c'; g.fillRect(sx - 9, 10, 18, 14);
+      g.fillStyle = '#5e5134'; g.fillRect(sx - 3, 22, 6, 16);
+    }
+    g.fillStyle = '#332f24'; g.fillRect(-18, -28, 36, 7); // cockpit slit
+    g.fillStyle = '#8c2f2f'; // insignia
+    g.beginPath(); g.moveTo(0, -10); g.lineTo(9, 0); g.lineTo(0, 10); g.lineTo(-9, 0); g.closePath(); g.fill();
+  }),
+  // 2 WAGAH ACE — twin-tail superiority jet, nose toward the player
+  sprite(150, 120, g => {
+    g.fillStyle = '#3c4654';
+    g.beginPath();
+    g.moveTo(0, 46); g.lineTo(10, 14); g.lineTo(58, -16); g.lineTo(58, -26); g.lineTo(11, -12);
+    g.lineTo(8, -40); g.lineTo(-8, -40); g.lineTo(-11, -12); g.lineTo(-58, -26); g.lineTo(-58, -16);
+    g.lineTo(-10, 14); g.closePath(); g.fill();
+    g.fillStyle = '#2c343f'; g.fillRect(-5, -36, 10, 56); // spine
+    for (const sx of [-16, 16]) { // twin tails
+      g.fillStyle = '#4a5566';
+      g.beginPath(); g.moveTo(sx, -22); g.lineTo(sx + 7, -46); g.lineTo(sx - 7, -42); g.closePath(); g.fill();
+    }
+    g.fillStyle = '#ffb02e'; g.fillRect(-58, -24, 24, 4); g.fillRect(34, -24, 24, 4); // gold trim
+    g.fillStyle = '#0f1822';
+    g.beginPath(); g.ellipse(0, 18, 5, 11, 0, 0, Math.PI * 2); g.fill(); // canopy
+    g.fillStyle = '#8c2f2f';
+    for (const sx of [-40, 40]) { g.beginPath(); g.arc(sx, -16, 4, 0, Math.PI * 2); g.fill(); }
+  }),
+  // 3 AKHNOOR WARLORD — the classic twin-rotor gunship
+  sprite(150, 120, g => {
+    g.fillStyle = '#454d44';
+    g.beginPath(); g.ellipse(0, 0, 34, 46, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#39403a'; g.fillRect(-66, -8, 132, 14);
+    g.fillStyle = '#2b3129';
+    g.beginPath(); g.ellipse(-52, -1, 9, 16, 0, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.ellipse(52, -1, 9, 16, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#161b21';
+    g.beginPath(); g.ellipse(0, 18, 13, 15, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#741f1f';
+    g.beginPath(); g.arc(-20, -28, 6, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.arc(20, -28, 6, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#5d6650'; g.fillRect(-10, -52, 20, 24);
+  }),
+  // 4 RIDGE ARTILLERY — snow-camo gun platform with one huge cannon
+  sprite(150, 120, g => {
+    g.fillStyle = '#cfd6da';
+    g.beginPath(); g.ellipse(0, -6, 48, 28, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#aab6bd';
+    g.beginPath(); g.ellipse(-18, -12, 16, 9, 0.4, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.ellipse(22, 0, 13, 8, -0.3, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#6a747a'; g.fillRect(-7, 10, 14, 40); // the cannon
+    g.fillStyle = '#4d565b'; g.fillRect(-10, 42, 20, 8); // muzzle
+    g.fillStyle = '#8b969c'; g.fillRect(-60, -10, 18, 10); g.fillRect(42, -10, 18, 10); // rotor arms
+    g.fillStyle = '#2e3338';
+    g.beginPath(); g.ellipse(0, -16, 9, 6, 0, 0, Math.PI * 2); g.fill(); // visor
+    g.fillStyle = '#c23b3b';
+    for (const sx of [-36, 36]) { g.beginPath(); g.arc(sx, -20, 3, 0, Math.PI * 2); g.fill(); }
+  }),
+  // 5 WHITE PHANTOM — pale crescent wing, glows and ghosts
+  sprite(150, 120, g => {
+    g.fillStyle = '#dfe9f2';
+    g.beginPath();
+    g.moveTo(0, 30);
+    g.quadraticCurveTo(50, 26, 64, -18); g.quadraticCurveTo(30, -2, 0, -2);
+    g.quadraticCurveTo(-30, -2, -64, -18); g.quadraticCurveTo(-50, 26, 0, 30);
+    g.closePath(); g.fill();
+    g.strokeStyle = '#9fc4dd'; g.lineWidth = 2;
+    g.beginPath(); g.moveTo(-64, -18); g.quadraticCurveTo(-30, 4, 0, 4); g.quadraticCurveTo(30, 4, 64, -18); g.stroke();
+    const grd = g.createRadialGradient(0, 10, 1, 0, 10, 14);
+    grd.addColorStop(0, '#bdf0ff'); grd.addColorStop(1, 'rgba(120,200,255,0)');
+    g.fillStyle = grd;
+    g.beginPath(); g.arc(0, 10, 14, 0, Math.PI * 2); g.fill(); // core glow
+    g.fillStyle = '#54c8ff';
+    g.beginPath(); g.arc(0, 10, 4, 0, Math.PI * 2); g.fill();
+  }),
+  // 6 LAKE SENTINEL — bronze quad-rotor with a single great eye
+  sprite(150, 120, g => {
+    g.strokeStyle = '#7a5c38'; g.lineWidth = 10;
+    g.beginPath(); g.moveTo(-44, -28); g.lineTo(44, 28); g.moveTo(44, -28); g.lineTo(-44, 28); g.stroke();
+    for (const [sx, sy] of [[-44, -28], [44, -28], [-44, 28], [44, 28]]) {
+      g.fillStyle = '#4e3c26'; g.beginPath(); g.arc(sx, sy, 12, 0, Math.PI * 2); g.fill();
+    }
+    g.fillStyle = '#9c7a4a'; g.beginPath(); g.arc(0, 0, 24, 0, Math.PI * 2); g.fill(); // hub
+    g.strokeStyle = '#5e4628'; g.lineWidth = 4;
+    g.beginPath(); g.arc(0, 0, 24, 0, Math.PI * 2); g.stroke();
+    g.fillStyle = '#2b211a'; g.beginPath(); g.arc(0, 2, 13, 0, Math.PI * 2); g.fill(); // eye
+    g.fillStyle = '#e84d4d'; g.beginPath(); g.arc(0, 2, 7, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#ffd9d9'; g.beginPath(); g.arc(-2, 0, 2.4, 0, Math.PI * 2); g.fill();
+  }),
+  // 7 RAZOR WING — serrated stealth chevron
+  sprite(150, 120, g => {
+    g.fillStyle = '#41335c';
+    g.beginPath();
+    g.moveTo(0, 32); g.lineTo(66, -24); g.lineTo(48, -26); g.lineTo(33, -12); g.lineTo(20, -24);
+    g.lineTo(8, -10); g.lineTo(0, -20); g.lineTo(-8, -10); g.lineTo(-20, -24); g.lineTo(-33, -12);
+    g.lineTo(-48, -26); g.lineTo(-66, -24); g.closePath(); g.fill();
+    g.strokeStyle = '#7a64a8'; g.lineWidth = 2;
+    g.beginPath(); g.moveTo(-66, -24); g.lineTo(0, 32); g.lineTo(66, -24); g.stroke();
+    g.fillStyle = '#15101f';
+    g.beginPath(); g.moveTo(0, 18); g.lineTo(6, 4); g.lineTo(-6, 4); g.closePath(); g.fill(); // cockpit
+    g.fillStyle = '#c23b3b';
+    for (const sx of [-58, 58]) { g.beginPath(); g.arc(sx, -22, 3, 0, Math.PI * 2); g.fill(); }
+  }),
+  // 8 STORM BRINGER — gunmetal heavy heli with lightning livery
+  sprite(150, 120, g => {
+    g.fillStyle = '#3a4046'; g.fillRect(-56, -8, 112, 13); // stub wings
+    g.fillStyle = '#4d545c';
+    g.beginPath(); g.ellipse(0, 0, 20, 36, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#343a41'; g.fillRect(-4, -52, 8, 22); // tail boom
+    g.fillStyle = '#161b21';
+    g.beginPath(); g.ellipse(0, 16, 11, 12, 0, 0, Math.PI * 2); g.fill(); // nose sensor
+    for (const sx of [-9, 9]) { g.fillStyle = '#23282d'; g.fillRect(sx - 3, 28, 6, 14); } // chin guns
+    g.fillStyle = '#ffd23e'; // lightning bolt
+    g.beginPath(); g.moveTo(-4, -26); g.lineTo(6, -12); g.lineTo(0, -10); g.lineTo(8, 4);
+    g.lineTo(-6, -8); g.lineTo(0, -10); g.closePath(); g.fill();
+    g.fillStyle = '#2b3129';
+    g.beginPath(); g.ellipse(-50, -2, 8, 13, 0, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.ellipse(50, -2, 8, 13, 0, 0, Math.PI * 2); g.fill();
+  }),
+  // 9 DRAGON COMMAND — the crimson flagship at Kibithu
+  sprite(150, 120, g => {
+    g.fillStyle = '#3a1414'; g.fillRect(-70, -8, 140, 14); // pylons
+    g.fillStyle = '#5a1f1f';
+    g.beginPath(); g.ellipse(0, 0, 36, 50, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#3a1414';
+    g.beginPath(); g.ellipse(0, -18, 26, 18, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#7c2a2a'; // dragon snout
+    g.beginPath(); g.moveTo(0, 56); g.lineTo(14, 34); g.lineTo(-14, 34); g.closePath(); g.fill();
+    g.fillStyle = '#ffae3d'; // eyes
+    for (const sx of [-8, 8]) { g.beginPath(); g.arc(sx, 36, 3.4, 0, Math.PI * 2); g.fill(); }
+    g.strokeStyle = '#c98a3d'; g.lineWidth = 2; // gold trim
+    g.beginPath(); g.ellipse(0, 0, 28, 42, 0, 0, Math.PI * 2); g.stroke();
+    g.fillStyle = '#2b1010';
+    g.beginPath(); g.ellipse(-60, -1, 9, 15, 0, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.ellipse(60, -1, 9, 15, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#1c0b0b';
+    g.beginPath(); g.arc(0, 4, 11, 0, Math.PI * 2); g.fill(); // core housing
+  }),
+];
+
+// spinning rotor cross, used by several bosses
+function rotor(x, y, len, ang, width = 4) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
+  ctx.strokeStyle = 'rgba(20,22,20,0.7)'; ctx.lineWidth = width;
+  ctx.beginPath(); ctx.moveTo(-len, 0); ctx.lineTo(len, 0);
+  ctx.moveTo(0, -len); ctx.lineTo(0, len); ctx.stroke();
+  ctx.restore();
+}
 
 const sprBullet = sprite(10, 22, g => {
   const grd = g.createLinearGradient(0, -10, 0, 10);
@@ -310,6 +500,25 @@ const sprShot = sprite(14, 14, g => {
   grd.addColorStop(0, '#ffe9e9'); grd.addColorStop(0.5, '#ff5f4f'); grd.addColorStop(1, 'rgba(255,60,40,0)');
   g.fillStyle = grd;
   g.beginPath(); g.arc(0, 0, 6, 0, Math.PI * 2); g.fill();
+});
+
+// cluster shell (bursts into fragments mid-air)
+const sprShell = sprite(26, 26, g => {
+  g.strokeStyle = '#7a3fb0'; g.lineWidth = 2.5;
+  g.beginPath(); g.arc(0, 0, 10, 0, Math.PI * 2); g.stroke();
+  const grd = g.createRadialGradient(0, 0, 1, 0, 0, 9);
+  grd.addColorStop(0, '#fff3c8'); grd.addColorStop(0.6, '#ffb02e'); grd.addColorStop(1, 'rgba(255,140,30,0)');
+  g.fillStyle = grd;
+  g.beginPath(); g.arc(0, 0, 9, 0, Math.PI * 2); g.fill();
+});
+
+// fortress bomb (falls straight down)
+const sprBomb = sprite(14, 26, g => {
+  g.fillStyle = '#ffae3d'; // tail flame
+  g.beginPath(); g.moveTo(-3, -9); g.lineTo(3, -9); g.lineTo(0, -13); g.closePath(); g.fill();
+  g.fillStyle = '#2e3338';
+  g.beginPath(); g.moveTo(-4, -9); g.lineTo(4, -9); g.lineTo(4, 5); g.lineTo(0, 11); g.lineTo(-4, 5); g.closePath(); g.fill();
+  g.fillStyle = '#4d565b'; g.fillRect(-6, -9, 12, 3); // fins
 });
 
 const POW_COLORS = ['#ff9933', '#e84d4d', '#3da5ff'];
@@ -478,6 +687,15 @@ const clouds = makeClouds(303);
 const hiKey = 'borderhawk_hiscore';
 let hiscore = +(localStorage.getItem(hiKey) || 0);
 let lastWave = 0, waveFlash = 0, lastMode = -1;
+let secretFlash = 0, secretName = '';
+// cinematic sector-title card (letterbox + name) when entering a new area
+let lastSector = -1, cineT = 0;
+const CINE_T = 3.4;
+function cineSwell() {
+  tone(146.83, 0.9, 'sine', 0.05);
+  setTimeout(() => tone(220, 0.7, 'sine', 0.045), 160);
+  setTimeout(() => tone(293.66, 1.0, 'sine', 0.05), 340);
+}
 let curBiome = null, prevBiome = null, biomeFade = 1;
 
 // Composite the two tile copies at 1:1 into an offscreen buffer first, then
@@ -549,6 +767,11 @@ function loop(now) {
     localStorage.setItem(cpKey, String(sector));
   }
   // score submission + leaderboard button visibility
+  // (gold star is banked before submitting so the entry carries it)
+  if (mode === 3 && lastMode === 1) {
+    wins = Math.min(5, wins + 1);
+    localStorage.setItem(winsKey, String(wins));
+  }
   if ((mode === 2 || mode === 3) && lastMode === 1) maybeSubmit(score, sector);
   if (mode === 1 && lastMode !== 1) submitState = '';
   lbbtn.style.display = mode !== 1 ? 'block' : 'none';
@@ -562,13 +785,23 @@ function loop(now) {
 
   // sound events
   const evn = hud[10];
-  for (let i = 0; i < evn; i++) { const fn = SFX[hud[11 + i]]; if (fn) fn(); }
+  for (let i = 0; i < evn; i++) {
+    const code = hud[11 + i];
+    if (code === 8) { secretFlash = 3.0; secretName = BOSSES[sector].secret || ''; }
+    const fn = SFX[code]; if (fn) fn();
+  }
 
   // hi-score
   if (score > hiscore) { hiscore = score; localStorage.setItem(hiKey, String(hiscore)); }
   if (mode === 1 && wave >= 1 && wave !== lastWave) { lastWave = wave; waveFlash = 2.0; }
   if (mode !== 1) lastWave = 0;
   if (waveFlash > 0) waveFlash -= dt;
+  if (secretFlash > 0) secretFlash -= dt;
+  // sector entry (run start or checkpoint secured) → roll the title card
+  if (mode === 1) {
+    if (sector !== lastSector) { lastSector = sector; cineT = CINE_T; cineSwell(); }
+  } else { lastSector = -1; }
+  if (cineT > 0) cineT -= dt;
   lastMode = mode;
 
   // ---- render ----
@@ -635,18 +868,67 @@ function loop(now) {
         ctx.moveTo(0, -30); ctx.lineTo(0, 30); ctx.stroke();
         ctx.restore();
         break;
-      case 6: // boss, aux = time for rotors
-        ctx.drawImage(sprBoss, -75, -60);
-        for (const rx of [-52, 52]) {
-          ctx.save(); ctx.translate(rx, -1); ctx.rotate(aux * 16);
-          ctx.strokeStyle = 'rgba(20,22,20,0.7)'; ctx.lineWidth = 4;
-          ctx.beginPath(); ctx.moveTo(-34, 0); ctx.lineTo(34, 0);
-          ctx.moveTo(0, -34); ctx.lineTo(0, 34); ctx.stroke();
-          ctx.restore();
+      case 6: { // boss: rot = variant (+0.5 when its secret weapon is live), aux = time
+        const v = Math.min(9, Math.floor(rot + 0.01));
+        const secretLive = rot - v > 0.25;
+        if (v === 9) ctx.scale(1.15, 1.15); // the flagship looms larger
+        if (v === 5) { // phantom shimmers in and out
+          ctx.globalAlpha = 0.6 + 0.3 * Math.sin(aux * 3);
+          ctx.fillStyle = 'rgba(120,200,255,0.18)';
+          ctx.beginPath(); ctx.arc(0, 0, 56, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.drawImage(sprBosses[v], -75, -60);
+        switch (v) {
+          case 0: for (const fx of [-46, 46]) rotor(fx, 2, 10, aux * 20, 3); break;
+          case 1: // engine flicker
+            ctx.globalAlpha = 0.5 + 0.4 * Math.sin(aux * 30);
+            ctx.fillStyle = '#ff7a2e';
+            for (const fx of [-20, 20]) { ctx.beginPath(); ctx.ellipse(fx, -34, 5, 8, 0, 0, Math.PI * 2); ctx.fill(); }
+            ctx.globalAlpha = 1;
+            break;
+          case 2: { // afterburners (exhaust points away from the player)
+            const fl = 10 + 6 * Math.sin(aux * 40);
+            ctx.fillStyle = '#ffae3d';
+            for (const fx of [-16, 16]) {
+              ctx.beginPath(); ctx.moveTo(fx - 4, -40); ctx.lineTo(fx + 4, -40); ctx.lineTo(fx, -40 - fl); ctx.closePath(); ctx.fill();
+            }
+            break;
+          }
+          case 3: for (const rx of [-52, 52]) rotor(rx, -1, 34, aux * 16); break;
+          case 4: for (const rx of [-58, 58]) rotor(rx, -5, 16, aux * 22, 3); break;
+          case 6: for (const [rx, ry] of [[-44, -28], [44, -28], [-44, 28], [44, 28]]) rotor(rx, ry, 15, aux * 24, 3); break;
+          case 7: // wingtip strobes
+            if (Math.sin(aux * 8) > 0) {
+              ctx.fillStyle = '#ff5f4f';
+              for (const fx of [-62, 62]) { ctx.beginPath(); ctx.arc(fx, -22, 4, 0, Math.PI * 2); ctx.fill(); }
+            }
+            break;
+          case 8: for (const rx of [-50, 50]) rotor(rx, -2, 30, aux * 18); break;
+          case 9: { // rotors + pulsing dragon core
+            for (const rx of [-60, 60]) rotor(rx, -1, 28, aux * 15);
+            ctx.fillStyle = '#ff7a2e';
+            ctx.beginPath(); ctx.arc(0, 4, 7 + 2.5 * Math.sin(aux * 6), 0, Math.PI * 2); ctx.fill();
+            break;
+          }
+        }
+        if (secretLive) { // secret weapon active: angry pulsing ring
+          ctx.globalAlpha = 0.25 + 0.18 * Math.sin(now / 70);
+          ctx.strokeStyle = '#ff4040'; ctx.lineWidth = 3;
+          ctx.beginPath(); ctx.arc(0, 0, 70, 0, Math.PI * 2); ctx.stroke();
+          ctx.globalAlpha = 1;
         }
         break;
-      case 7:
-        ctx.drawImage(sprShot, -7, -7);
+      }
+      case 7: // enemy shot, aux = kind
+        if (aux === 1) { // cluster shell pulses as the fuse burns
+          const p = 1 + 0.15 * Math.sin(now / 70);
+          ctx.scale(p, p);
+          ctx.drawImage(sprShell, -13, -13);
+        } else if (aux === 2) {
+          ctx.drawImage(sprBomb, -7, -13);
+        } else {
+          ctx.drawImage(sprShot, -7, -7);
+        }
         break;
       case 8:
         ctx.translate(0, Math.sin(now / 200 + x) * 3);
@@ -711,19 +993,47 @@ function loop(now) {
       ctx.fillRect(60, 70, bw, 12);
       ctx.fillStyle = '#d4382e';
       ctx.fillRect(62, 72, (bw - 4) * Math.max(0, bossHp / bossMax), 8);
-      text('BOSS', W / 2, 64, 12, '#ffd9d9');
+      text(BOSSES[sector].name, W / 2, 64, 12, '#ffd9d9');
     }
     if (clearT > 0 && mode === 1) {
-      // checkpoint secured intermission
+      // checkpoint secured intermission (the title card announces the new area)
       ctx.globalAlpha = Math.min(1, clearT);
-      text('✔ CHECKPOINT SECURED', W / 2, H * 0.34, 30, '#7fe06a');
-      text('PROGRESS SAVED', W / 2, H * 0.34 + 32, 15, '#dce6f0');
-      text(`ADVANCING TO ${sec.name}`, W / 2, H * 0.34 + 60, 18, '#ffffff');
-      text(sec.region, W / 2, H * 0.34 + 84, 14, '#c8d4e0');
+      text('✔ CHECKPOINT SECURED', W / 2, H * 0.22, 26, '#7fe06a');
+      text('PROGRESS SAVED', W / 2, H * 0.22 + 28, 14, '#dce6f0');
       ctx.globalAlpha = 1;
-    } else if (waveFlash > 0 && mode === 1) {
+    } else if (waveFlash > 0 && mode === 1 && cineT <= 0) {
       ctx.globalAlpha = Math.min(1, waveFlash);
-      text(wave >= 5 ? '⚠ SECTOR BOSS ⚠' : 'WAVE ' + wave + '/5', W / 2, H * 0.38, 34, wave >= 5 ? '#ff5f4f' : '#ffffff');
+      text(wave >= 5 ? '⚠ ' + BOSSES[sector].name + ' ⚠' : 'WAVE ' + wave + '/5', W / 2, H * 0.38, 32, wave >= 5 ? '#ff5f4f' : '#ffffff');
+      ctx.globalAlpha = 1;
+    }
+    if (secretFlash > 0 && mode === 1) {
+      ctx.globalAlpha = Math.min(1, secretFlash) * (Math.floor(now / 130) % 2 ? 1 : 0.55);
+      text('⚠ SECRET WEAPON ⚠', W / 2, H * 0.28, 28, '#ff4fd8');
+      text(secretName, W / 2, H * 0.28 + 32, 22, '#ffffff');
+      ctx.globalAlpha = 1;
+    }
+    if (cineT > 0 && mode === 1) {
+      // cinematic area title: letterbox bars, zooming name, sweeping tricolor
+      const t = CINE_T - cineT;
+      const ss = (x) => { x = Math.max(0, Math.min(1, x)); return x * x * (3 - 2 * x); };
+      const a = ss(t / 0.5) * ss(cineT / 0.6);
+      const bh = 62 * a;
+      ctx.fillStyle = 'rgba(4,7,12,0.92)';
+      ctx.fillRect(0, 0, W, bh);
+      ctx.fillRect(0, H - bh, W, bh);
+      ctx.fillStyle = `rgba(6,10,16,${(0.3 * a).toFixed(3)})`;
+      ctx.fillRect(0, bh, W, H - 2 * bh);
+      ctx.globalAlpha = a;
+      text(`SECTOR ${sector + 1} / 10`, W / 2, H * 0.40 - 46, 15, '#ffd23e');
+      const z = 1.14 - 0.14 * ss(t / 0.9);
+      ctx.save();
+      ctx.translate(W / 2, H * 0.40);
+      ctx.scale(z, z);
+      text(sec.name, 0, 0, 42, '#ffffff');
+      ctx.restore();
+      const uw = 230 * ss(t / 0.8);
+      if (uw > 1) tricolorBar(W / 2 - uw / 2, H * 0.40 + 28, uw, 4);
+      text(sec.region.toUpperCase(), W / 2, H * 0.40 + 56, 16, '#c8d4e0');
       ctx.globalAlpha = 1;
     }
   }
@@ -734,7 +1044,7 @@ function loop(now) {
     tricolorBar(W / 2 - 110, H * 0.28 - 58, 220, 6);
     text('BORDERHAWK', W / 2, H * 0.28, 52, '#ffffff');
     text('HIMALAYAN SKIES', W / 2, H * 0.28 + 38, 19, '#ff9933');
-    text('THE BORDER CAMPAIGN · 10 SECTORS', W / 2, H * 0.42, 16, '#ffffff');
+    text('THE BORDER CAMPAIGN · 10 UNIQUE BOSSES', W / 2, H * 0.42, 16, '#ffffff');
     text('Sir Creek → Kibithu, west to east', W / 2, H * 0.42 + 24, 14, '#c8d4e0');
     text('Drag to fly · cannon auto-fires · boss = checkpoint', W / 2, H * 0.42 + 48, 14, '#c8d4e0');
     text('W = wing guns · M = Astra missiles · S = shield', W / 2, H * 0.42 + 72, 13, '#9fb0c2');
@@ -745,9 +1055,10 @@ function loop(now) {
       text('[ NEW CAMPAIGN ]', W / 2, H * 0.86, 16, '#9fb0c2');
     } else {
       if (Math.floor(now / 600) % 2) text('TAP TO SCRAMBLE', W / 2, H * 0.66, 24, '#ffd23e');
-      if (localStorage.getItem('borderhawk_completed')) text('★ CAMPAIGN VETERAN ★', W / 2, H * 0.74, 14, '#ffd23e');
+      if (wins > 0) text(`CAMPAIGN VETERAN ${'★'.repeat(wins)}`, W / 2, H * 0.74, 14, '#ffd23e');
     }
     if (hiscore > 0) text('HI-SCORE ' + hiscore, W / 2, H * 0.80, 15, '#dce6f0');
+    text('a game by rokiroy.in', W / 2, H - 18, 12, '#8fa3bb');
   } else if (mode === 2) {
     ctx.fillStyle = 'rgba(6,10,16,0.55)';
     ctx.fillRect(0, 0, W, H);
@@ -769,7 +1080,9 @@ function loop(now) {
     text('The entire frontier is safe. Jai Hind! 🇮🇳', W / 2, H * 0.30 + 68, 16, '#ffd23e');
     text('SCORE ' + score, W / 2, H * 0.48, 26, '#ffffff');
     if (submitState === 'ok') text('✓ SCORE ON GLOBAL LEADERBOARD', W / 2, H * 0.53, 14, '#ffd23e');
-    if (Math.floor(now / 600) % 2) text('TAP FOR MENU', W / 2, H * 0.62, 20, '#ffd23e');
+    text('★'.repeat(wins) + '☆'.repeat(5 - wins), W / 2, H * 0.57, 24, '#ffd23e');
+    text('GOLD STAR EARNED — shown by your name on the leaderboard', W / 2, H * 0.57 + 24, 12, '#dce6f0');
+    if (Math.floor(now / 600) % 2) text('TAP FOR MENU', W / 2, H * 0.64, 20, '#ffd23e');
   }
 
   ctx.restore();
