@@ -59,6 +59,16 @@ aimed shots, 250 pts) · **gunship helis** (hover and fire 3-round spreads,
 400 pts) · **boss gunship** every 5th wave (radial + aimed barrages, 5000 pts).
 Difficulty scales with the wave number. Hi-score persists in localStorage.
 
+## Global leaderboard
+
+After a run, enter your **call sign and city** once (saved locally) and your
+score is submitted to a global leaderboard — open it with the 🏆 button on the
+menu. Backed by a Vercel Function (`web/api/leaderboard.js`) + **Vercel Blob**:
+each score is a zero-content blob whose pathname encodes
+`score.sector.name.city.timestamp` (names/cities base64url-encoded, full
+Unicode support), so reads are a single `list()` call and concurrent writes
+can never race. Top 50, deduped to each pilot's best score.
+
 ## Architecture
 
 ```

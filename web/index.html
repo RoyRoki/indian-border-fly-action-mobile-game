@@ -24,12 +24,74 @@
     margin: 0; padding: 0; height: 100%; overflow: hidden;
     background: #06090f; touch-action: none; overscroll-behavior: none;
     -webkit-user-select: none; user-select: none;
+    font-family: "Avenir Next", "Segoe UI", sans-serif;
   }
   canvas { display: block; width: 100vw; height: 100vh; }
+  .overlay {
+    position: fixed; inset: 0; display: none; z-index: 10;
+    background: rgba(4,8,14,0.78); align-items: center; justify-content: center;
+  }
+  .overlay.open { display: flex; }
+  .panel {
+    width: min(86vw, 340px); max-height: 78vh; overflow-y: auto;
+    background: #0d1626; border: 1px solid #24344e; border-radius: 14px;
+    padding: 20px; color: #e8eef6; -webkit-user-select: auto; user-select: auto;
+  }
+  .panel h2 { margin: 0 0 4px; font-size: 20px; letter-spacing: 1px; }
+  .panel .sub { color: #8fa3bb; font-size: 12px; margin-bottom: 14px; }
+  .panel label { display: block; font-size: 12px; color: #9fb3c8; margin: 10px 0 4px; }
+  .panel input {
+    width: 100%; box-sizing: border-box; padding: 10px 12px; font-size: 16px;
+    background: #16223a; color: #fff; border: 1px solid #2d415f; border-radius: 8px; outline: none;
+  }
+  .panel input:focus { border-color: #ff9933; }
+  .btn {
+    display: block; width: 100%; margin-top: 16px; padding: 12px; font-size: 16px; font-weight: 700;
+    background: #ff9933; color: #1a2233; border: 0; border-radius: 10px; cursor: pointer;
+  }
+  .btn.ghost { background: transparent; color: #8fa3bb; font-weight: 600; font-size: 13px; margin-top: 8px; }
+  #lbrows { margin-top: 10px; }
+  .row { display: flex; gap: 8px; padding: 7px 4px; font-size: 14px; border-bottom: 1px solid #1a2740; align-items: baseline; }
+  .row .rank { width: 26px; color: #8fa3bb; font-weight: 700; }
+  .row .who { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .who small { color: #8fa3bb; }
+  .row .pts { font-weight: 700; color: #ffd23e; }
+  .row.me { background: rgba(255,153,51,0.12); border-radius: 6px; }
+  .medal { color: #ffd23e; }
+  #lbstatus { color: #8fa3bb; font-size: 13px; padding: 12px 0; text-align: center; }
+  #lbbtn {
+    position: fixed; left: 12px; bottom: 12px; z-index: 5; display: none;
+    background: rgba(13,22,38,0.85); color: #ffd23e; border: 1px solid #2d415f;
+    border-radius: 24px; padding: 10px 18px; font-size: 14px; font-weight: 700; cursor: pointer;
+  }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
+<button id="lbbtn">🏆 LEADERBOARD</button>
+
+<div class="overlay" id="profileOverlay">
+  <div class="panel">
+    <h2>PILOT ID</h2>
+    <div class="sub">Shown on the global leaderboard</div>
+    <label for="pname">CALL SIGN / NAME</label>
+    <input id="pname" maxlength="14" placeholder="e.g. ROKI" autocomplete="off">
+    <label for="pcity">CITY</label>
+    <input id="pcity" maxlength="14" placeholder="e.g. Bengaluru" autocomplete="off">
+    <button class="btn" id="psave">SAVE &amp; SUBMIT SCORE</button>
+    <button class="btn ghost" id="pskip">skip — don't submit</button>
+  </div>
+</div>
+
+<div class="overlay" id="lbOverlay">
+  <div class="panel">
+    <h2>🏆 TOP PILOTS</h2>
+    <div class="sub">Best score per pilot · all sectors</div>
+    <div id="lbstatus">loading…</div>
+    <div id="lbrows"></div>
+    <button class="btn" id="lbclose">CLOSE</button>
+  </div>
+</div>
 <script type="module" src="game.js"></script>
 </body>
 </html>

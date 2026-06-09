@@ -87,8 +87,83 @@ canvas.addEventListener('pointermove', e => {
 });
 addEventListener('pointerup', () => { pointer.down = false; });
 addEventListener('pointercancel', () => { pointer.down = false; });
-addEventListener('keydown', e => { keys[e.code] = true; if (e.code === 'Space' || e.code === 'Enter') unlockAudio(); });
-addEventListener('keyup', e => { keys[e.code] = false; });
+addEventListener('keydown', e => {
+  if (e.target && e.target.tagName === 'INPUT') return; // typing in forms
+  keys[e.code] = true;
+  if (e.code === 'Space' || e.code === 'Enter') unlockAudio();
+});
+addEventListener('keyup', e => {
+  if (e.target && e.target.tagName === 'INPUT') return;
+  keys[e.code] = false;
+});
+
+// ---------- leaderboard & pilot profile ----------
+const profKey = 'borderhawk_profile';
+let profile = null;
+try { profile = JSON.parse(localStorage.getItem(profKey) || 'null'); } catch { /* corrupt */ }
+let pendingScore = null; // {score, sector} awaiting profile entry
+let submitState = '';    // '', 'sending', 'ok', 'fail'
+const $ = (id) => document.getElementById(id);
+const profileOverlay = $('profileOverlay'), lbOverlay = $('lbOverlay'), lbbtn = $('lbbtn');
+const uiOpen = () => profileOverlay.classList.contains('open') || lbOverlay.classList.contains('open');
+const esc = (x) => String(x).replace(/[&<>"']/g, ch => `&#${ch.charCodeAt(0)};`);
+
+async function postScore(s) {
+  submitState = 'sending';
+  try {
+    const r = await fetch('/api/leaderboard', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: profile.name, city: profile.city, score: s.score, sector: s.sector }),
+    });
+    submitState = r.ok ? 'ok' : 'fail';
+  } catch { submitState = 'fail'; }
+}
+function maybeSubmit(score, sector) {
+  if (score <= 0) return;
+  pendingScore = { score, sector };
+  if (profile?.name) postScore(pendingScore);
+  else {
+    $('pname').value = profile?.name || '';
+    $('pcity').value = profile?.city || '';
+    profileOverlay.classList.add('open');
+    setTimeout(() => $('pname').focus(), 50);
+  }
+}
+$('psave').onclick = () => {
+  const name = $('pname').value.trim().slice(0, 14);
+  if (!name) { $('pname').focus(); return; }
+  profile = { name, city: $('pcity').value.trim().slice(0, 14) };
+  localStorage.setItem(profKey, JSON.stringify(profile));
+  profileOverlay.classList.remove('open');
+  if (pendingScore) postScore(pendingScore);
+};
+$('pskip').onclick = () => {
+  profileOverlay.classList.remove('open');
+  pendingScore = null;
+  submitState = '';
+};
+lbbtn.onclick = async () => {
+  lbOverlay.classList.add('open');
+  $('lbstatus').textContent = 'loading…';
+  $('lbrows').innerHTML = '';
+  try {
+    const r = await fetch('/api/leaderboard');
+    const { top } = await r.json();
+    if (!top?.length) { $('lbstatus').textContent = 'No scores yet — be the first!'; return; }
+    $('lbstatus').textContent = '';
+    const medals = ['🥇', '🥈', '🥉'];
+    $('lbrows').innerHTML = top.map((t, i) => {
+      const me = profile?.name && t.name.toLowerCase() === profile.name.toLowerCase()
+        && (t.city || '').toLowerCase() === (profile.city || '').toLowerCase();
+      return `<div class="row${me ? ' me' : ''}">
+        <span class="rank">${medals[i] || i + 1}</span>
+        <span class="who">${esc(t.name)} <small>· ${esc(t.city)} · S${(t.sector | 0) + 1}</small></span>
+        <span class="pts">${t.score}</span></div>`;
+    }).join('');
+  } catch { $('lbstatus').textContent = 'Could not load leaderboard.'; }
+};
+$('lbclose').onclick = () => lbOverlay.classList.remove('open');
 
 // ---------- audio (tiny synth) ----------
 let ac = null;
@@ -429,7 +504,7 @@ function loop(now) {
   if (keys.ArrowDown || keys.KeyS) pointer.y += spd;
   pointer.x = Math.max(0, Math.min(W, pointer.x));
   pointer.y = Math.max(0, Math.min(H, pointer.y));
-  const pressed = pointer.down || keys.Space || keys.Enter ? 1 : 0;
+  const pressed = !uiOpen() && (pointer.down || keys.Space || keys.Enter) ? 1 : 0;
 
   const nCmds = wasm.frame(dt, pointer.x, pointer.y, pressed);
   const f = mem();
@@ -444,6 +519,10 @@ function loop(now) {
     savedCp = sector;
     localStorage.setItem(cpKey, String(sector));
   }
+  // score submission + leaderboard button visibility
+  if ((mode === 2 || mode === 3) && lastMode === 1) maybeSubmit(score, sector);
+  if (mode === 1 && lastMode !== 1) submitState = '';
+  lbbtn.style.display = mode !== 1 ? 'block' : 'none';
   if (mode === 3 && lastMode !== 3) {
     // campaign complete — next run starts fresh from Sir Creek
     savedCp = 0;
@@ -637,7 +716,10 @@ function loop(now) {
     if (score >= hiscore && score > 0) text('★ NEW HI-SCORE ★', W / 2, H * 0.34 + 78, 18, '#ffd23e');
     const cs = SECTORS[savedCp];
     text(`CHECKPOINT SAVED: SECTOR ${savedCp + 1} · ${cs.name}`, W / 2, H * 0.56, 15, '#7fe06a');
-    if (Math.floor(now / 600) % 2) text('TAP TO RE-SCRAMBLE FROM CHECKPOINT', W / 2, H * 0.64, 19, '#ffd23e');
+    if (submitState === 'ok') text('✓ SCORE ON GLOBAL LEADERBOARD', W / 2, H * 0.60, 14, '#ffd23e');
+    else if (submitState === 'sending') text('submitting score…', W / 2, H * 0.60, 14, '#9fb0c2');
+    else if (submitState === 'fail') text('score submit failed', W / 2, H * 0.60, 14, '#ff5f4f');
+    if (Math.floor(now / 600) % 2) text('TAP TO RE-SCRAMBLE FROM CHECKPOINT', W / 2, H * 0.66, 19, '#ffd23e');
   } else if (mode === 3) {
     ctx.fillStyle = 'rgba(6,10,16,0.55)';
     ctx.fillRect(0, 0, W, H);
@@ -646,6 +728,7 @@ function loop(now) {
     text('SIR CREEK → KIBITHU · ALL 10 SECTORS', W / 2, H * 0.30 + 40, 16, '#ffffff');
     text('The entire frontier is safe. Jai Hind! 🇮🇳', W / 2, H * 0.30 + 68, 16, '#ffd23e');
     text('SCORE ' + score, W / 2, H * 0.48, 26, '#ffffff');
+    if (submitState === 'ok') text('✓ SCORE ON GLOBAL LEADERBOARD', W / 2, H * 0.53, 14, '#ffd23e');
     if (Math.floor(now / 600) % 2) text('TAP FOR MENU', W / 2, H * 0.62, 20, '#ffd23e');
   }
 
