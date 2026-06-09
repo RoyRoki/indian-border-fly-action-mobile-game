@@ -1,0 +1,13 @@
+[package]
+name = "indian_border_fly_action_mobile_game"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+codegen-units = 1
