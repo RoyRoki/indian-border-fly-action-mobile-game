@@ -354,69 +354,92 @@ function makeTerrain(seed, biomeKey) {
   const g = c.getContext('2d');
   const r = mulberry32(seed);
   g.fillStyle = B.base; g.fillRect(0, 0, W, H);
+  // Torus wrap: every feature is drawn at y-H, y, y+H so content that
+  // overflows one tile edge reappears at the other — no seam when scrolled.
+  const wrap = (y, fn) => {
+    for (const k of [-H, 0, H]) {
+      g.save(); g.translate(0, y + k); fn(); g.restore();
+    }
+  };
   // texture patches
   const [pr, pg, pb] = B.patch;
   for (let i = 0; i < 90; i++) {
-    g.fillStyle = `rgba(${pr + r() * 28 | 0},${pg + r() * 24 | 0},${pb + r() * 20 | 0},0.5)`;
-    g.beginPath(); g.ellipse(r() * W, r() * H, 18 + r() * 60, 8 + r() * 30, r() * 3, 0, Math.PI * 2); g.fill();
+    const x = r() * W, y = r() * H, rx = 18 + r() * 60, ry = 8 + r() * 30, rot = r() * 3;
+    const col = `rgba(${pr + r() * 28 | 0},${pg + r() * 24 | 0},${pb + r() * 20 | 0},0.5)`;
+    wrap(y, () => {
+      g.fillStyle = col;
+      g.beginPath(); g.ellipse(x, 0, rx, ry, rot, 0, Math.PI * 2); g.fill();
+    });
   }
-  // ridges / dunes with highlight caps (kept off tile edges so the seam hides)
+  // ridges / dunes with highlight caps
   for (let i = 0; i < 9; i++) {
-    const cx = r() * W, cy = 60 + r() * (H - 120), len = 70 + r() * 130, ang = r() * Math.PI;
-    g.save(); g.translate(cx, cy); g.rotate(ang);
-    g.fillStyle = B.ridge;
-    g.beginPath();
-    g.moveTo(-len / 2, 12);
-    for (let x = -len / 2; x <= len / 2; x += 14) g.lineTo(x, -6 - r() * 22);
-    g.lineTo(len / 2, 12); g.closePath(); g.fill();
-    g.fillStyle = B.cap;
-    g.beginPath();
-    g.moveTo(-len / 2, -2);
-    for (let x = -len / 2; x <= len / 2; x += 14) g.lineTo(x, -10 - r() * 16);
-    g.lineTo(len / 2, -2); g.closePath(); g.fill();
-    g.restore();
+    const cx = r() * W, cy = r() * H, len = 70 + r() * 130, ang = r() * Math.PI;
+    const prof = [], prof2 = [];
+    for (let x = -len / 2; x <= len / 2; x += 14) { prof.push(-6 - r() * 22); prof2.push(-10 - r() * 16); }
+    wrap(cy, () => {
+      g.translate(cx, 0); g.rotate(ang);
+      g.fillStyle = B.ridge;
+      g.beginPath(); g.moveTo(-len / 2, 12);
+      let k = 0;
+      for (let x = -len / 2; x <= len / 2; x += 14) g.lineTo(x, prof[k++]);
+      g.lineTo(len / 2, 12); g.closePath(); g.fill();
+      g.fillStyle = B.cap;
+      g.beginPath(); g.moveTo(-len / 2, -2);
+      k = 0;
+      for (let x = -len / 2; x <= len / 2; x += 14) g.lineTo(x, prof2[k++]);
+      g.lineTo(len / 2, -2); g.closePath(); g.fill();
+    });
   }
   // vegetation
   if (B.veg !== 'none') {
     for (let i = 0; i < 26; i++) {
-      const cx = r() * W, cy = 40 + r() * (H - 80);
+      const cx = r() * W, cy = r() * H;
       for (let j = 0; j < 5; j++) {
         const x = cx + (r() - 0.5) * 50, y = cy + (r() - 0.5) * 40, s = 5 + r() * 6;
-        g.fillStyle = B.vegc;
-        if (B.veg === 'pine') {
-          g.beginPath(); g.moveTo(x, y - s * 1.6); g.lineTo(x + s, y + s); g.lineTo(x - s, y + s); g.closePath(); g.fill();
-          if (B.snowVeg) {
-            g.fillStyle = 'rgba(244,248,251,0.7)';
-            g.beginPath(); g.moveTo(x, y - s * 1.6); g.lineTo(x + s * 0.5, y - s * 0.3); g.lineTo(x - s * 0.5, y - s * 0.3); g.closePath(); g.fill();
+        wrap(y, () => {
+          g.fillStyle = B.vegc;
+          if (B.veg === 'pine') {
+            g.beginPath(); g.moveTo(x, -s * 1.6); g.lineTo(x + s, s); g.lineTo(x - s, s); g.closePath(); g.fill();
+            if (B.snowVeg) {
+              g.fillStyle = 'rgba(244,248,251,0.7)';
+              g.beginPath(); g.moveTo(x, -s * 1.6); g.lineTo(x + s * 0.5, -s * 0.3); g.lineTo(x - s * 0.5, -s * 0.3); g.closePath(); g.fill();
+            }
+          } else if (B.veg === 'tree') {
+            g.beginPath(); g.arc(x, 0, s * 0.9, 0, Math.PI * 2); g.fill();
+            g.fillStyle = 'rgba(255,255,255,0.18)';
+            g.beginPath(); g.arc(x - s * 0.3, -s * 0.3, s * 0.4, 0, Math.PI * 2); g.fill();
+          } else { // shrub
+            g.beginPath(); g.arc(x, 0, s * 0.45, 0, Math.PI * 2); g.fill();
           }
-        } else if (B.veg === 'tree') {
-          g.beginPath(); g.arc(x, y, s * 0.9, 0, Math.PI * 2); g.fill();
-          g.fillStyle = 'rgba(255,255,255,0.18)';
-          g.beginPath(); g.arc(x - s * 0.3, y - s * 0.3, s * 0.4, 0, Math.PI * 2); g.fill();
-        } else { // shrub
-          g.beginPath(); g.arc(x, y, s * 0.45, 0, Math.PI * 2); g.fill();
-        }
+        });
       }
     }
   }
-  // winding border road / fence line
+  // winding border road — spans the full tile and ends on the x it started,
+  // so the line continues unbroken across the tile join
+  const pts = [];
+  let bx = 80 + r() * (W - 160);
+  const x0 = bx;
+  for (let y = 0; y <= H; y += 80) {
+    pts.push([bx, y]);
+    bx = Math.max(50, Math.min(W - 50, bx + (r() - 0.5) * 160));
+  }
+  pts[pts.length - 1][0] = x0;
   g.strokeStyle = 'rgba(110,95,68,0.55)';
   g.lineWidth = 7; g.setLineDash([18, 12]);
   g.beginPath();
-  let bx = 80 + r() * (W - 160);
-  g.moveTo(bx, 70);
-  for (let y = 70; y <= H - 70; y += 80) {
-    bx = Math.max(50, Math.min(W - 50, bx + (r() - 0.5) * 160));
-    g.lineTo(bx, y);
-  }
+  g.moveTo(pts[0][0], pts[0][1]);
+  for (const [x, y] of pts.slice(1)) g.lineTo(x, y);
   g.stroke(); g.setLineDash([]);
   // lakes / water
   for (let i = 0; i < B.lakes; i++) {
-    const lx = 60 + r() * (W - 120), ly = 100 + r() * (H - 200);
-    g.fillStyle = B.water;
-    g.beginPath(); g.ellipse(lx, ly, 30 + r() * 40, 20 + r() * 25, r(), 0, Math.PI * 2); g.fill();
-    g.fillStyle = 'rgba(255,255,255,0.45)';
-    g.beginPath(); g.ellipse(lx - 8, ly - 6, 14, 8, 0.4, 0, Math.PI * 2); g.fill();
+    const lx = 60 + r() * (W - 120), ly = r() * H, rx = 30 + r() * 40, ry = 20 + r() * 25, rot = r();
+    wrap(ly, () => {
+      g.fillStyle = B.water;
+      g.beginPath(); g.ellipse(lx, 0, rx, ry, rot, 0, Math.PI * 2); g.fill();
+      g.fillStyle = 'rgba(255,255,255,0.45)';
+      g.beginPath(); g.ellipse(lx - 8, -6, 14, 8, 0.4, 0, Math.PI * 2); g.fill();
+    });
   }
   return c;
 }
@@ -426,24 +449,26 @@ function makeClouds(seed) {
   c.width = W; c.height = H;
   const g = c.getContext('2d');
   const r = mulberry32(seed);
+  g.fillStyle = 'rgba(255,255,255,0.16)';
   for (let i = 0; i < 10; i++) {
-    const cx = r() * W, cy = 50 + r() * (H - 100);
-    g.fillStyle = 'rgba(255,255,255,0.16)';
+    const cx = r() * W, cy = r() * H;
     for (let j = 0; j < 6; j++) {
-      g.beginPath();
-      g.ellipse(cx + (r() - 0.5) * 120, cy + (r() - 0.5) * 40, 30 + r() * 50, 16 + r() * 22, 0, 0, Math.PI * 2);
-      g.fill();
+      const x = cx + (r() - 0.5) * 120, y = cy + (r() - 0.5) * 40;
+      const rx = 30 + r() * 50, ry = 16 + r() * 22;
+      for (const k of [-H, 0, H]) { // torus wrap, same as terrain
+        g.beginPath(); g.ellipse(x, y + k, rx, ry, 0, 0, Math.PI * 2); g.fill();
+      }
     }
   }
   return c;
 }
 
 const tileCache = {};
-function tilesFor(biome) {
+function tileFor(biome) {
   if (!tileCache[biome]) {
     let h = 0;
     for (const ch of biome) h = (h * 31 + ch.charCodeAt(0)) | 0;
-    tileCache[biome] = [makeTerrain(101 + (h & 0xffff), biome), makeTerrain(202 + (h & 0xffff), biome)];
+    tileCache[biome] = makeTerrain(101 + (h & 0xffff), biome);
   }
   return tileCache[biome];
 }
@@ -453,19 +478,14 @@ const clouds = makeClouds(303);
 const hiKey = 'borderhawk_hiscore';
 let hiscore = +(localStorage.getItem(hiKey) || 0);
 let lastWave = 0, waveFlash = 0, lastMode = -1;
+let curBiome = null, prevBiome = null, biomeFade = 1;
 
-function drawScrollLayer(img2, scrollPx, alpha = 1) {
-  const off = ((scrollPx % H) + H) % H;
+function drawScrollLayer(img, scrollPx, alpha = 1) {
+  // integer offset avoids a sub-pixel antialiasing hairline at the tile join
+  const off = Math.floor(((scrollPx % H) + H) % H);
   ctx.globalAlpha = alpha;
-  if (Array.isArray(img2)) {
-    // alternate two tiles so adjacent bands differ
-    const idx = Math.floor(((scrollPx) / H) % 2 + 2) % 2;
-    ctx.drawImage(img2[idx], 0, off - H);
-    ctx.drawImage(img2[1 - idx], 0, off);
-  } else {
-    ctx.drawImage(img2, 0, off - H);
-    ctx.drawImage(img2, 0, off);
-  }
+  ctx.drawImage(img, 0, off - H);
+  ctx.drawImage(img, 0, off);
   ctx.globalAlpha = 1;
 }
 
@@ -551,7 +571,18 @@ function loop(now) {
   ctx.save();
   ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip();
 
-  drawScrollLayer(tilesFor(sec.biome), scroll);
+  // terrain with smooth biome crossfade (no teleporting when a sector falls)
+  if (curBiome === null) curBiome = sec.biome;
+  if (sec.biome !== curBiome) { prevBiome = curBiome; curBiome = sec.biome; biomeFade = 0; }
+  if (biomeFade < 1 && prevBiome) {
+    biomeFade = Math.min(1, biomeFade + dt / 2.2);
+    const t = biomeFade * biomeFade * (3 - 2 * biomeFade); // smoothstep
+    drawScrollLayer(tileFor(prevBiome), scroll);
+    drawScrollLayer(tileFor(curBiome), scroll, t);
+  } else {
+    biomeFade = 1;
+    drawScrollLayer(tileFor(curBiome), scroll);
+  }
   drawScrollLayer(clouds, scroll * 1.7, 0.9);
 
   // draw commands
