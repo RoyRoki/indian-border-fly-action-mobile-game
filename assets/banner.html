@@ -1,0 +1,126 @@
+<!doctype html>
+<!-- Social/OG banner source. Render with:
+     chrome --headless --screenshot=web/og.png --window-size=1200,630 assets/banner.html -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { width: 1200px; height: 630px; overflow: hidden; font-family: "Avenir Next", "Segoe UI", sans-serif; }
+  .stage {
+    position: relative; width: 1200px; height: 630px;
+    background: linear-gradient(180deg, #0a1228 0%, #16284d 38%, #3d5a85 62%, #c46a3a 86%, #e8924f 100%);
+  }
+  svg.scene { position: absolute; inset: 0; }
+  .content { position: absolute; left: 72px; top: 118px; z-index: 5; }
+  .tric { width: 360px; height: 10px; display: flex; border-radius: 5px; overflow: hidden;
+          box-shadow: 0 2px 14px rgba(0,0,0,.45); }
+  .tric div { flex: 1; }
+  h1 {
+    margin-top: 22px; font-size: 110px; font-weight: 800; letter-spacing: 2px; color: #ffffff;
+    text-shadow: 0 6px 26px rgba(0,0,0,.55);
+  }
+  h2 {
+    margin-top: 6px; font-size: 38px; font-weight: 700; letter-spacing: 12px; color: #ff9933;
+    text-shadow: 0 3px 14px rgba(0,0,0,.5);
+  }
+  .tag {
+    margin-top: 34px; font-size: 27px; font-weight: 600; color: #dfe9f5;
+    text-shadow: 0 2px 10px rgba(0,0,0,.55);
+  }
+  .cta {
+    position: absolute; left: 72px; bottom: 56px; z-index: 5;
+    display: inline-flex; align-items: center; gap: 18px;
+  }
+  .pill {
+    background: #ffd23e; color: #1a2233; font-weight: 800; font-size: 26px;
+    padding: 14px 30px; border-radius: 40px; letter-spacing: 1px;
+    box-shadow: 0 6px 22px rgba(0,0,0,.4);
+  }
+  .url { font-size: 26px; font-weight: 700; color: #ffffff; text-shadow: 0 2px 10px rgba(0,0,0,.6); }
+</style>
+</head>
+<body>
+<div class="stage">
+  <svg class="scene" width="1200" height="630" viewBox="0 0 1200 630">
+    <!-- stars -->
+    <g fill="#ffffff">
+      <circle cx="140" cy="60" r="2" opacity=".9"/><circle cx="320" cy="40" r="1.5" opacity=".6"/>
+      <circle cx="540" cy="80" r="2" opacity=".7"/><circle cx="760" cy="36" r="1.6" opacity=".8"/>
+      <circle cx="920" cy="70" r="2.2" opacity=".9"/><circle cx="1080" cy="46" r="1.5" opacity=".6"/>
+      <circle cx="1010" cy="120" r="1.8" opacity=".7"/><circle cx="230" cy="110" r="1.4" opacity=".5"/>
+      <circle cx="660" cy="130" r="1.4" opacity=".5"/><circle cx="860" cy="150" r="1.6" opacity=".6"/>
+    </g>
+    <!-- far mountain range -->
+    <path d="M0 430 L90 330 L170 400 L260 290 L350 390 L470 270 L560 380 L650 300 L760 410 L850 310 L950 400 L1050 320 L1130 390 L1200 340 L1200 630 L0 630 Z"
+          fill="#2a3c5e" opacity=".85"/>
+    <!-- snow caps far -->
+    <path d="M260 290 L296 335 L276 330 L256 345 L238 326 Z" fill="#cfe0ef" opacity=".8"/>
+    <path d="M470 270 L510 322 L488 314 L468 332 L444 312 Z" fill="#cfe0ef" opacity=".85"/>
+    <path d="M850 310 L884 352 L866 346 L848 360 L826 344 Z" fill="#cfe0ef" opacity=".75"/>
+    <path d="M1050 320 L1082 358 L1064 352 L1046 366 L1026 350 Z" fill="#cfe0ef" opacity=".7"/>
+    <!-- near mountain range -->
+    <path d="M0 520 L130 400 L240 490 L380 370 L520 500 L640 410 L800 520 L930 400 L1060 500 L1200 430 L1200 630 L0 630 Z"
+          fill="#17233c"/>
+    <path d="M380 370 L428 432 L402 422 L378 444 L348 418 Z" fill="#e8f1f8"/>
+    <path d="M930 400 L972 452 L948 444 L926 462 L900 440 Z" fill="#e8f1f8"/>
+    <!-- enemy silhouettes -->
+    <g fill="#0c1322" opacity=".9">
+      <g transform="translate(960,150) scale(1.15)">
+        <path d="M0 14 L4 2 L18 -6 L18 -10 L4 -6 L2 -16 L-2 -16 L-4 -6 L-18 -10 L-18 -6 L-4 2 Z"/>
+      </g>
+      <g transform="translate(1080,230) scale(0.9)">
+        <path d="M0 14 L4 2 L18 -6 L18 -10 L4 -6 L2 -16 L-2 -16 L-4 -6 L-18 -10 L-18 -6 L-4 2 Z"/>
+      </g>
+      <g transform="translate(870,260) scale(0.7)">
+        <rect x="-14" y="-3" width="28" height="6" rx="2"/>
+        <rect x="-3" y="-14" width="6" height="28" rx="2"/>
+        <circle cx="-12" cy="-12" r="7"/><circle cx="12" cy="-12" r="7"/>
+        <circle cx="-12" cy="12" r="7"/><circle cx="12" cy="12" r="7"/>
+      </g>
+    </g>
+    <!-- tracer fire from hero jet toward enemies -->
+    <g stroke-linecap="round">
+      <line x1="800" y1="395" x2="900" y2="220" stroke="#ffd23e" stroke-width="5" opacity=".95"/>
+      <line x1="828" y1="412" x2="942" y2="252" stroke="#ffb02e" stroke-width="4" opacity=".8"/>
+      <line x1="852" y1="430" x2="1020" y2="280" stroke="#ffd23e" stroke-width="4" opacity=".7"/>
+    </g>
+    <!-- tricolor contrail -->
+    <g stroke-linecap="round" opacity=".95">
+      <path d="M690 520 C 560 560, 380 600, 180 590" stroke="#ff9933" stroke-width="13" fill="none"/>
+      <path d="M700 535 C 570 578, 390 618, 195 610" stroke="#f4f4f4" stroke-width="13" fill="none"/>
+      <path d="M710 550 C 580 596, 410 636, 215 630" stroke="#138808" stroke-width="13" fill="none"/>
+    </g>
+    <!-- hero jet (delta, nose up-right) -->
+    <g transform="translate(770,460) rotate(34) scale(3.1)">
+      <path d="M0 -30 L7 -8 L26 16 L26 22 L7 16 L5 26 L-5 26 L-7 16 L-26 22 L-26 16 L-7 -8 Z" fill="#b9cad9"/>
+      <path d="M-3 -2 h6 v24 h-6 Z" fill="#8aa0b4"/>
+      <ellipse cx="0" cy="-10" rx="4" ry="9" fill="#1d3a5f"/>
+      <g>
+        <circle cx="-16" cy="14" r="5" fill="#ff9933"/><circle cx="-16" cy="14" r="3.2" fill="#fff"/><circle cx="-16" cy="14" r="1.6" fill="#138808"/>
+        <circle cx="16" cy="14" r="5" fill="#ff9933"/><circle cx="16" cy="14" r="3.2" fill="#fff"/><circle cx="16" cy="14" r="1.6" fill="#138808"/>
+      </g>
+      <path d="M0 -30 L26 16 M0 -30 L-26 16" stroke="#e6eef5" stroke-width="1.5" fill="none"/>
+      <path d="M-4 26 L0 36 L4 26 Z" fill="#ffae3d"/>
+    </g>
+    <!-- explosion on far drone -->
+    <g transform="translate(1080,230)">
+      <circle r="20" fill="#ff7a2e" opacity=".55"/>
+      <circle r="11" fill="#ffd23e" opacity=".85"/>
+      <circle r="5" fill="#fff7c0"/>
+    </g>
+  </svg>
+
+  <div class="content">
+    <div class="tric"><div style="background:#ff9933"></div><div style="background:#f4f4f4"></div><div style="background:#138808"></div></div>
+    <h1>BORDERHAWK</h1>
+    <h2>HIMALAYAN SKIES</h2>
+    <div class="tag">Defend the northern frontier. Rust-powered. No install.</div>
+  </div>
+  <div class="cta">
+    <div class="pill">▶ PLAY FREE</div>
+    <div class="url">borderhawk.vercel.app</div>
+  </div>
+</div>
+</body>
+</html>
