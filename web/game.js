@@ -480,12 +480,21 @@ let hiscore = +(localStorage.getItem(hiKey) || 0);
 let lastWave = 0, waveFlash = 0, lastMode = -1;
 let curBiome = null, prevBiome = null, biomeFade = 1;
 
+// Composite the two tile copies at 1:1 into an offscreen buffer first, then
+// blit the buffer once. Drawing the tiles straight onto the scaled context
+// antialiases each tile's edge separately and leaves a hairline at the join;
+// at 1:1 integer offsets the join is pixel-exact, and the single blit has no
+// interior edge to filter.
+const layerBuf = document.createElement('canvas');
+layerBuf.width = W; layerBuf.height = H;
+const lb = layerBuf.getContext('2d');
 function drawScrollLayer(img, scrollPx, alpha = 1) {
-  // integer offset avoids a sub-pixel antialiasing hairline at the tile join
   const off = Math.floor(((scrollPx % H) + H) % H);
+  lb.clearRect(0, 0, W, H);
+  lb.drawImage(img, 0, off - H);
+  lb.drawImage(img, 0, off);
   ctx.globalAlpha = alpha;
-  ctx.drawImage(img, 0, off - H);
-  ctx.drawImage(img, 0, off);
+  ctx.drawImage(layerBuf, 0, 0);
   ctx.globalAlpha = 1;
 }
 
