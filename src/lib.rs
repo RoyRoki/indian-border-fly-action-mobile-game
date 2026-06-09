@@ -14,6 +14,12 @@ const NP: usize = 8; // powerups
 const NT: usize = 160; // particles
 const MAXD: usize = 420; // max draw commands
 
+// Campaign: India's border west→east, 10 checkpoint sectors.
+// Each sector = waves 1..=5; wave 5 is the sector boss. Killing it secures
+// the checkpoint (JS persists it) and advances to the next sector.
+const NSECTORS: u32 = 10;
+const WAVES_PER_SECTOR: u32 = 5;
+
 // draw kinds
 const D_PLAYER: f32 = 0.0;
 const D_BULLET: f32 = 1.0;
@@ -95,11 +101,14 @@ struct Pt {
 }
 
 struct Game {
-    mode: u32, // 0 menu, 1 playing, 2 game over
+    mode: u32, // 0 menu, 1 playing, 2 game over, 3 campaign victory
     rng: u32,
     score: u32,
     lives: i32,
-    wave: u32,
+    wave: u32, // wave within the sector, 1..=5
+    sector: u32,
+    start_sector: u32, // checkpoint new games resume from
+    clear_t: f32,      // "checkpoint secured" intermission timer
     scroll: f32,
     over_t: f32,
     prev_pressed: bool,
@@ -109,7 +118,6 @@ struct Game {
     prot: f32,
     pinv: f32,
     weapon: u32,
-    wtimer: f32,
     mtimer: f32,
     shield: f32,
     ccd: f32,
@@ -163,6 +171,9 @@ static mut GAME: Game = Game {
     score: 0,
     lives: 3,
     wave: 1,
+    sector: 0,
+    start_sector: 0,
+    clear_t: 0.0,
     scroll: 0.0,
     over_t: 0.0,
     prev_pressed: false,
@@ -171,7 +182,6 @@ static mut GAME: Game = Game {
     prot: 0.0,
     pinv: 0.0,
     weapon: 1,
-    wtimer: 0.0,
     mtimer: 0.0,
     shield: 0.0,
     ccd: 0.0,
@@ -187,15 +197,16 @@ static mut GAME: Game = Game {
     parts: [ZT; NT],
 };
 
-// HUD: 0 mode, 1 score, 2 lives, 3 wave, 4 scroll, 5 boss hp, 6 boss max,
-//      7 weapon lvl, 8 shield t, 9 missile t, 10 event count, 11..16 events
-static mut HUD: [f32; 16] = [0.0; 16];
+// HUD: 0 mode, 1 score, 2 lives, 3 wave (within sector), 4 scroll, 5 boss hp,
+//      6 boss max, 7 weapon lvl, 8 shield t, 9 missile t, 10 event count,
+//      11..16 events, 16 sector, 17 checkpoint-secured timer
+static mut HUD: [f32; 24] = [0.0; 24];
 static mut DRAW: [f32; MAXD * 6] = [0.0; MAXD * 6];
 
 fn game() -> &'static mut Game {
     unsafe { &mut *(&raw mut GAME) }
 }
-fn hud() -> &'static mut [f32; 16] {
+fn hud() -> &'static mut [f32; 24] {
     unsafe { &mut *(&raw mut HUD) }
 }
 fn drawbuf() -> &'static mut [f32; MAXD * 6] {
@@ -211,7 +222,7 @@ fn rnd(rng: &mut u32) -> f32 {
     (x >> 8) as f32 / 16_777_216.0
 }
 
-fn push_ev(h: &mut [f32; 16], code: f32) {
+fn push_ev(h: &mut [f32; 24], code: f32) {
     let n = h[10] as usize;
     if n < 5 {
         h[11 + n] = code;
@@ -318,13 +329,18 @@ fn enemy_radius(kind: u8) -> f32 {
     }
 }
 
-fn start_wave(g: &mut Game, h: &mut [f32; 16]) {
-    if g.wave % 5 == 0 {
-        // boss wave
+// global difficulty: grows across the whole campaign, west to east
+fn diff(g: &Game) -> u32 {
+    g.sector * WAVES_PER_SECTOR + g.wave
+}
+
+fn start_wave(g: &mut Game, h: &mut [f32; 24]) {
+    if g.wave >= WAVES_PER_SECTOR {
+        // sector boss guards the checkpoint
         g.spawn_left = 0;
         for e in g.enemies.iter_mut() {
             if !e.alive {
-                let hp = 60.0 + g.wave as f32 * 9.0;
+                let hp = 50.0 + (g.sector * WAVES_PER_SECTOR + WAVES_PER_SECTOR) as f32 * 4.5;
                 *e = Enemy {
                     alive: true,
                     kind: 3,
@@ -346,17 +362,18 @@ fn start_wave(g: &mut Game, h: &mut [f32; 16]) {
         }
         push_ev(h, EV_BOSS);
     } else {
-        g.spawn_left = (4 + g.wave * 2).min(24);
+        g.spawn_left = (3 + g.wave * 2 + g.sector).min(12);
         g.spawn_cd = 0.8;
     }
 }
 
 fn spawn_enemy(g: &mut Game) {
-    let wave = g.wave as f32;
+    let d = diff(g);
+    let wave = d as f32;
     let r = rnd(&mut g.rng);
-    let kind: u8 = if g.wave >= 4 && r < 0.18 {
+    let kind: u8 = if d >= 4 && r < 0.18 {
         2
-    } else if g.wave >= 2 && r < 0.50 {
+    } else if d >= 2 && r < 0.50 {
         1
     } else {
         0
@@ -373,7 +390,7 @@ fn spawn_enemy(g: &mut Game) {
                 x,
                 y: -30.0,
                 vx: 0.0,
-                vy: (70.0 + wave * 5.0).min(170.0),
+                vy: (70.0 + wave * 5.0).min(150.0),
                 hp: 1.0,
                 maxhp: 1.0,
                 t: 0.0,
@@ -389,7 +406,7 @@ fn spawn_enemy(g: &mut Game) {
                 x,
                 y: -40.0,
                 vx: 0.0,
-                vy: (170.0 + wave * 6.0).min(290.0),
+                vy: (170.0 + wave * 6.0).min(260.0),
                 hp: 2.0,
                 maxhp: 2.0,
                 t: 0.0,
@@ -406,8 +423,8 @@ fn spawn_enemy(g: &mut Game) {
                 y: -40.0,
                 vx: 0.0,
                 vy: 90.0,
-                hp: 6.0 + wave * 0.5,
-                maxhp: 6.0 + wave * 0.5,
+                hp: 6.0 + (wave * 0.5).min(10.0),
+                maxhp: 6.0 + (wave * 0.5).min(10.0),
                 t: 0.0,
                 cd: 1.6,
                 phase: rnd(&mut g.rng) * PI * 2.0,
@@ -420,16 +437,17 @@ fn spawn_enemy(g: &mut Game) {
     }
 }
 
-fn reset_game(g: &mut Game, h: &mut [f32; 16]) {
+fn reset_game(g: &mut Game, h: &mut [f32; 24]) {
     g.score = 0;
     g.lives = 3;
+    g.sector = g.start_sector.min(NSECTORS - 1);
     g.wave = 1;
+    g.clear_t = 0.0;
     g.over_t = 0.0;
     g.px = W / 2.0;
     g.py = H - 140.0;
     g.pinv = 2.0;
     g.weapon = 1;
-    g.wtimer = 0.0;
     g.mtimer = 0.0;
     g.shield = 0.0;
     g.ccd = 0.0;
@@ -443,13 +461,12 @@ fn reset_game(g: &mut Game, h: &mut [f32; 16]) {
     start_wave(g, h);
 }
 
-fn kill_player_hit(g: &mut Game, h: &mut [f32; 16]) {
+fn kill_player_hit(g: &mut Game, h: &mut [f32; 24]) {
     if g.shield > 0.0 || g.pinv > 0.0 {
         return;
     }
     g.lives -= 1;
-    g.weapon = 1;
-    g.mtimer = 0.0;
+    g.weapon = g.weapon.saturating_sub(1).max(1);
     g.pinv = 2.5;
     boom(&mut g.parts, &mut g.rng, g.px, g.py, 26, true);
     push_ev(h, EV_HIT);
@@ -467,6 +484,12 @@ pub extern "C" fn init(seed: u32) {
     g.rng = seed | 1;
     g.mode = 0;
     g.scroll = 0.0;
+}
+
+// Resume point for new games. JS calls this with the persisted checkpoint.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_checkpoint(sector: u32) {
+    game().start_sector = sector.min(NSECTORS - 1);
 }
 
 #[unsafe(no_mangle)]
@@ -532,6 +555,13 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
                 reset_game(g, h);
             }
         }
+        3 => {
+            // campaign complete — border secured start to end
+            g.over_t += dt;
+            if g.over_t > 1.2 && tap {
+                g.mode = 0;
+            }
+        }
         _ => {}
     }
 
@@ -549,12 +579,6 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
         }
         if g.shield > 0.0 {
             g.shield -= dt;
-        }
-        if g.wtimer > 0.0 {
-            g.wtimer -= dt;
-            if g.wtimer <= 0.0 {
-                g.weapon = 1;
-            }
         }
         if g.mtimer > 0.0 {
             g.mtimer -= dt;
@@ -613,21 +637,28 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
             }
         }
 
-        // ---- wave spawning ----
-        if g.spawn_left > 0 {
+        // ---- wave spawning / checkpoint intermission ----
+        if g.clear_t > 0.0 {
+            g.clear_t -= dt;
+            if g.clear_t <= 0.0 {
+                g.wave = 1;
+                start_wave(g, h);
+            }
+        } else if g.spawn_left > 0 {
             g.spawn_cd -= dt;
             if g.spawn_cd <= 0.0 {
-                g.spawn_cd = (1.25 - g.wave as f32 * 0.05).max(0.38);
+                g.spawn_cd = (1.25 - diff(g) as f32 * 0.04).max(0.55);
                 g.spawn_left -= 1;
                 spawn_enemy(g);
             }
-        } else if !g.enemies.iter().any(|e| e.alive) {
+        } else if !g.enemies.iter().any(|e| e.alive) && g.wave < WAVES_PER_SECTOR {
             g.wave += 1;
             start_wave(g, h);
         }
 
         // ---- enemies ----
         let (ppx, ppy) = (g.px, g.py);
+        let d = diff(g);
         for ei in 0..NE {
             if !g.enemies[ei].alive {
                 continue;
@@ -640,7 +671,7 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
                     // drone: weave down
                     e.x = e.bx + (e.t * 2.2 + e.phase).sin() * 70.0;
                     e.y += e.vy * dt;
-                    if g.wave >= 3 && e.cd <= 0.0 && e.y > 0.0 && e.y < ppy - 120.0 {
+                    if d >= 3 && e.cd <= 0.0 && e.y > 0.0 && e.y < ppy - 120.0 {
                         e.cd = 2.6;
                         spawn_shot(&mut g.shots, e.x, e.y + 14.0, 0.0, 240.0);
                     }
@@ -668,7 +699,7 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
                         e.x = (e.x + e.vx * dt).clamp(32.0, W - 32.0);
                     }
                     if e.cd <= 0.0 && e.y > 20.0 {
-                        e.cd = (1.9 - g.wave as f32 * 0.03).max(1.2);
+                        e.cd = (1.9 - d as f32 * 0.03).max(1.35);
                         let dx = ppx - e.x;
                         let dy = (ppy - e.y).max(40.0);
                         let len = (dx * dx + dy * dy).sqrt().max(1.0);
@@ -714,8 +745,8 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
                             }
                         } else {
                             e.cd = 2.1;
-                            for k in 0..16 {
-                                let a = k as f32 / 16.0 * PI * 2.0 + e.t;
+                            for k in 0..14 {
+                                let a = k as f32 / 14.0 * PI * 2.0 + e.t;
                                 spawn_shot(&mut g.shots, e.x, e.y, a.cos() * 140.0, a.sin() * 140.0);
                             }
                         }
@@ -821,6 +852,21 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
                         if e.kind == 3 {
                             spawn_pow(&mut g.pows, &mut g.rng, e.x - 30.0, e.y);
                             spawn_pow(&mut g.pows, &mut g.rng, e.x + 30.0, e.y);
+                            // checkpoint secured: clear hostile fire, save resume
+                            // point, advance west→east (or finish the campaign)
+                            for s in g.shots.iter_mut() {
+                                s.alive = false;
+                            }
+                            if g.sector + 1 >= NSECTORS {
+                                g.mode = 3;
+                                g.over_t = 0.0;
+                            } else {
+                                g.sector += 1;
+                                g.start_sector = g.sector;
+                                g.clear_t = 3.0;
+                                g.wave = 0;
+                                g.spawn_left = 0;
+                            }
                         } else if rnd(&mut g.rng) < 0.14 {
                             spawn_pow(&mut g.pows, &mut g.rng, e.x, e.y);
                         }
@@ -881,10 +927,8 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
             if dx * dx + dy * dy < 30.0 * 30.0 {
                 g.pows[pi].alive = false;
                 match p.kind {
-                    0 => {
-                        g.weapon = (g.weapon + 1).min(3);
-                        g.wtimer = 14.0;
-                    }
+                    // weapon upgrades are permanent; getting hit degrades one level
+                    0 => g.weapon = (g.weapon + 1).min(3),
                     1 => {
                         g.mtimer = 12.0;
                         g.mcd = 0.0;
@@ -966,7 +1010,7 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
             emit(&mut n, D_SHOT, s.x, s.y, 0.0, 1.0, 0.0);
         }
     }
-    if g.mode == 1 {
+    if g.mode == 1 || g.mode == 3 {
         let blink = g.pinv > 0.0 && ((g.pinv * 14.0) as u32) % 2 == 0;
         emit(&mut n, D_PLAYER, g.px, g.py, g.prot, 1.0, if blink { 1.0 } else { 0.0 });
         if g.shield > 0.0 {
@@ -984,6 +1028,8 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
     h[7] = g.weapon as f32;
     h[8] = g.shield.max(0.0);
     h[9] = g.mtimer.max(0.0);
+    h[16] = g.sector as f32;
+    h[17] = g.clear_t.max(0.0);
 
     n as u32
 }

@@ -1,8 +1,26 @@
 # BORDERHAWK: Himalayan Skies
 
-A vertical-scrolling air-action mobile game. You pilot an IAF Tejas over
-Himalayan border terrain, holding the line against waves of hostile drones,
-strike jets, and gunship helicopters — with a boss gunship every 5th wave.
+A vertical-scrolling air-action mobile game. You pilot an IAF Tejas along
+India's entire border, **west to east — Sir Creek to Kibithu** — through 10
+checkpoint sectors, holding the line against waves of hostile drones, strike
+jets, and gunship helicopters. Every sector ends with a boss gunship; killing
+it **secures the checkpoint and saves your progress** (localStorage), so you
+always re-scramble from the last secured sector.
+
+| # | Checkpoint | Region | Terrain |
+|---|------------|--------|---------|
+| 1 | Sir Creek | Gujarat | marshland |
+| 2 | Longewala | Rajasthan | Thar desert |
+| 3 | Attari–Wagah | Punjab | green fields |
+| 4 | Akhnoor | Jammu | foothills |
+| 5 | Kargil–Dras | Ladakh | snow |
+| 6 | Siachen Glacier | Ladakh | ice |
+| 7 | Pangong–Galwan | Ladakh | high desert |
+| 8 | Nathu La | Sikkim | alpine |
+| 9 | Tawang | Arunachal | alpine |
+| 10 | Kibithu–Walong | Arunachal | forest |
+
+Secure all ten and the campaign ends with **BORDER SECURED**.
 
 The entire game engine (entities, waves, physics, collision, scoring,
 particles) is written in **Rust** and compiled to **WebAssembly**

@@ -7,12 +7,24 @@ const w = instance.exports;
 
 const fail = (msg) => { console.error('FAIL:', msg); process.exit(1); };
 
-for (const name of ['init', 'frame', 'draw_ptr', 'hud_ptr', 'memory'])
+for (const name of ['init', 'frame', 'draw_ptr', 'hud_ptr', 'set_checkpoint', 'memory'])
   if (!(name in w)) fail(`missing export ${name}`);
 
 w.init(42);
-const hud = () => new Float32Array(w.memory.buffer, w.hud_ptr(), 16);
+const hud = () => new Float32Array(w.memory.buffer, w.hud_ptr(), 24);
 const dt = 1 / 60;
+
+// checkpoint resume: a saved sector 6 game starts in sector 6
+w.set_checkpoint(6);
+w.frame(dt, 240, 600, 0);
+w.frame(dt, 240, 600, 1);
+if (hud()[0] !== 1) fail('checkpoint game did not start');
+if (hud()[16] !== 6) fail('set_checkpoint(6) ignored, sector=' + hud()[16]);
+console.log('checkpoint resume: OK (started in sector 6)');
+// back to a fresh campaign for the main test
+w.set_checkpoint(0);
+for (let i = 0; i < 200; i++) w.frame(dt, 240, 600, 0); // settle
+w.init(42);
 
 // menu idles
 let n = w.frame(dt, 240, 600, 0);
@@ -42,10 +54,10 @@ for (let i = 0; i < 3600; i++) {
   }
 }
 const h = hud();
-console.log(`after 60s: mode=${h[0]} score=${h[1]} lives=${h[2]} wave=${h[3]} maxCmds=${maxCmds} events=${sawEvents}`);
+console.log(`after 60s: mode=${h[0]} score=${h[1]} lives=${h[2]} wave=${h[3]} sector=${h[16]} maxCmds=${maxCmds} events=${sawEvents}`);
 if (!sawEnemyDraw) fail('no enemies ever drawn');
 if (h[1] <= 0) fail('score never increased (collisions broken?)');
-if (h[3] < 2 && h[0] === 1) fail('wave never advanced');
+if (h[3] < 2 && h[16] === 0 && h[0] === 1) fail('wave never advanced');
 if (sawEvents <= 0) fail('no sound events emitted');
 
 // if we died, tap should restart after delay

@@ -19,6 +19,26 @@ async function loadWasm() {
 const { instance } = await loadWasm();
 const wasm = instance.exports;
 wasm.init((Math.random() * 0xffffffff) >>> 0);
+
+// ---------- campaign: India's border, west → east ----------
+const SECTORS = [
+  { name: 'SIR CREEK',       region: 'Gujarat',   biome: 'marsh' },
+  { name: 'LONGEWALA',       region: 'Rajasthan', biome: 'desert' },
+  { name: 'ATTARI–WAGAH',    region: 'Punjab',    biome: 'plains' },
+  { name: 'AKHNOOR',         region: 'Jammu',     biome: 'foothills' },
+  { name: 'KARGIL–DRAS',     region: 'Ladakh',    biome: 'snow' },
+  { name: 'SIACHEN GLACIER', region: 'Ladakh',    biome: 'ice' },
+  { name: 'PANGONG–GALWAN',  region: 'Ladakh',    biome: 'highdesert' },
+  { name: 'NATHU LA',        region: 'Sikkim',    biome: 'alpine' },
+  { name: 'TAWANG',          region: 'Arunachal', biome: 'alpine' },
+  { name: 'KIBITHU–WALONG',  region: 'Arunachal', biome: 'forest' },
+];
+const cpKey = 'borderhawk_checkpoint';
+let savedCp = Math.min(+(localStorage.getItem(cpKey) || 0), SECTORS.length - 1);
+// ?cp=N forces a starting sector (testing/screenshots)
+const cpOverride = new URLSearchParams(location.search).get('cp');
+if (cpOverride !== null) savedCp = Math.min(Math.max(+cpOverride || 0, 0), SECTORS.length - 1);
+wasm.set_checkpoint(savedCp);
 const mem = () => new Float32Array(wasm.memory.buffer);
 const DRAW_PTR = wasm.draw_ptr() / 4;
 const HUD_PTR = wasm.hud_ptr() / 4;
@@ -48,9 +68,16 @@ function toGame(e) {
 }
 canvas.addEventListener('pointerdown', e => {
   const p = toGame(e);
-  pointer.x = p.x; pointer.y = p.y - 90; pointer.down = true;
   unlockAudio();
   e.preventDefault();
+  // "[ NEW CAMPAIGN ]" tap zone on the menu wipes the saved checkpoint
+  if (lastMode === 0 && savedCp > 0 && Math.abs(p.x - W / 2) < 120 && Math.abs(p.y - H * 0.86) < 26) {
+    savedCp = 0;
+    localStorage.setItem(cpKey, '0');
+    wasm.set_checkpoint(0);
+    return; // swallow the tap so it doesn't also start the game
+  }
+  pointer.x = p.x; pointer.y = p.y - 90; pointer.down = true;
 });
 canvas.addEventListener('pointermove', e => {
   if (!pointer.down && e.pointerType !== 'mouse') return;
@@ -232,47 +259,73 @@ function mulberry32(a) {
   };
 }
 
-function makeTerrain(seed) {
+// per-biome palettes: [base, patchRGB, ridge, ridgeCap, vegStyle, vegColor, water, lakeCount]
+const BIOMES = {
+  marsh:      { base: '#cfd9c0', patch: [185, 198, 168], ridge: '#b3a98c', cap: '#e8e4d2', veg: 'shrub', vegc: '#5a7a52', water: '#8fbf9f', lakes: 4, snowVeg: false },
+  desert:     { base: '#e3cf9e', patch: [212, 188, 138], ridge: '#c4a368', cap: '#f0e3bd', veg: 'shrub', vegc: '#6e7d4d', water: '#7fb6c9', lakes: 0, snowVeg: false },
+  plains:     { base: '#b9d39a', patch: [165, 195, 130], ridge: '#9aa86f', cap: '#d6e8b8', veg: 'tree',  vegc: '#3f6b3a', water: '#7fb6c9', lakes: 1, snowVeg: false },
+  foothills:  { base: '#c5cba6', patch: [178, 186, 145], ridge: '#9b8e72', cap: '#e9ecd8', veg: 'pine',  vegc: '#41603f', water: '#7fb6c9', lakes: 1, snowVeg: false },
+  snow:       { base: '#dfe7ee', patch: [205, 219, 231], ridge: '#a8b6bf', cap: '#f4f8fb', veg: 'pine',  vegc: '#3c5a44', water: '#a9cfdd', lakes: 1, snowVeg: true },
+  ice:        { base: '#e7eef5', patch: [212, 226, 238], ridge: '#9fb4c4', cap: '#ffffff', veg: 'none',  vegc: '#3c5a44', water: '#bcdde8', lakes: 2, snowVeg: true },
+  highdesert: { base: '#d3c4a4', patch: [196, 181, 150], ridge: '#a08c6c', cap: '#efe8d8', veg: 'none',  vegc: '#6e7d4d', water: '#69b7d4', lakes: 2, snowVeg: false },
+  alpine:     { base: '#d4dfd2', patch: [192, 209, 190], ridge: '#94a59b', cap: '#eef5ef', veg: 'pine',  vegc: '#33523c', water: '#8fc4d4', lakes: 1, snowVeg: true },
+  forest:     { base: '#a9c690', patch: [142, 176, 116], ridge: '#7e9468', cap: '#cfe3bd', veg: 'pine',  vegc: '#2e4f33', water: '#7fb6c9', lakes: 1, snowVeg: false },
+};
+
+function makeTerrain(seed, biomeKey) {
+  const B = BIOMES[biomeKey];
   const c = document.createElement('canvas');
   c.width = W; c.height = H;
   const g = c.getContext('2d');
   const r = mulberry32(seed);
-  // snowfield base
-  g.fillStyle = '#dfe7ee'; g.fillRect(0, 0, W, H);
-  // subtle snow texture patches
+  g.fillStyle = B.base; g.fillRect(0, 0, W, H);
+  // texture patches
+  const [pr, pg, pb] = B.patch;
   for (let i = 0; i < 90; i++) {
-    g.fillStyle = `rgba(${200 + r() * 30 | 0},${214 + r() * 25 | 0},${226 + r() * 20 | 0},0.5)`;
+    g.fillStyle = `rgba(${pr + r() * 28 | 0},${pg + r() * 24 | 0},${pb + r() * 20 | 0},0.5)`;
     g.beginPath(); g.ellipse(r() * W, r() * H, 18 + r() * 60, 8 + r() * 30, r() * 3, 0, Math.PI * 2); g.fill();
   }
-  // rocky ridges with snow caps (kept away from tile edges so the seam hides)
+  // ridges / dunes with highlight caps (kept off tile edges so the seam hides)
   for (let i = 0; i < 9; i++) {
     const cx = r() * W, cy = 60 + r() * (H - 120), len = 70 + r() * 130, ang = r() * Math.PI;
     g.save(); g.translate(cx, cy); g.rotate(ang);
-    g.fillStyle = '#a8b6bf';
+    g.fillStyle = B.ridge;
     g.beginPath();
     g.moveTo(-len / 2, 12);
     for (let x = -len / 2; x <= len / 2; x += 14) g.lineTo(x, -6 - r() * 22);
     g.lineTo(len / 2, 12); g.closePath(); g.fill();
-    g.fillStyle = '#f4f8fb';
+    g.fillStyle = B.cap;
     g.beginPath();
     g.moveTo(-len / 2, -2);
     for (let x = -len / 2; x <= len / 2; x += 14) g.lineTo(x, -10 - r() * 16);
     g.lineTo(len / 2, -2); g.closePath(); g.fill();
     g.restore();
   }
-  // pine clusters
-  for (let i = 0; i < 26; i++) {
-    const cx = r() * W, cy = 40 + r() * (H - 80);
-    for (let j = 0; j < 5; j++) {
-      const x = cx + (r() - 0.5) * 50, y = cy + (r() - 0.5) * 40, s = 5 + r() * 6;
-      g.fillStyle = '#3c5a44';
-      g.beginPath(); g.moveTo(x, y - s * 1.6); g.lineTo(x + s, y + s); g.lineTo(x - s, y + s); g.closePath(); g.fill();
-      g.fillStyle = 'rgba(244,248,251,0.7)';
-      g.beginPath(); g.moveTo(x, y - s * 1.6); g.lineTo(x + s * 0.5, y - s * 0.3); g.lineTo(x - s * 0.5, y - s * 0.3); g.closePath(); g.fill();
+  // vegetation
+  if (B.veg !== 'none') {
+    for (let i = 0; i < 26; i++) {
+      const cx = r() * W, cy = 40 + r() * (H - 80);
+      for (let j = 0; j < 5; j++) {
+        const x = cx + (r() - 0.5) * 50, y = cy + (r() - 0.5) * 40, s = 5 + r() * 6;
+        g.fillStyle = B.vegc;
+        if (B.veg === 'pine') {
+          g.beginPath(); g.moveTo(x, y - s * 1.6); g.lineTo(x + s, y + s); g.lineTo(x - s, y + s); g.closePath(); g.fill();
+          if (B.snowVeg) {
+            g.fillStyle = 'rgba(244,248,251,0.7)';
+            g.beginPath(); g.moveTo(x, y - s * 1.6); g.lineTo(x + s * 0.5, y - s * 0.3); g.lineTo(x - s * 0.5, y - s * 0.3); g.closePath(); g.fill();
+          }
+        } else if (B.veg === 'tree') {
+          g.beginPath(); g.arc(x, y, s * 0.9, 0, Math.PI * 2); g.fill();
+          g.fillStyle = 'rgba(255,255,255,0.18)';
+          g.beginPath(); g.arc(x - s * 0.3, y - s * 0.3, s * 0.4, 0, Math.PI * 2); g.fill();
+        } else { // shrub
+          g.beginPath(); g.arc(x, y, s * 0.45, 0, Math.PI * 2); g.fill();
+        }
+      }
     }
   }
   // winding border road / fence line
-  g.strokeStyle = 'rgba(120,90,60,0.55)';
+  g.strokeStyle = 'rgba(110,95,68,0.55)';
   g.lineWidth = 7; g.setLineDash([18, 12]);
   g.beginPath();
   let bx = 80 + r() * (W - 160);
@@ -282,12 +335,14 @@ function makeTerrain(seed) {
     g.lineTo(bx, y);
   }
   g.stroke(); g.setLineDash([]);
-  // frozen lake
-  const lx = 60 + r() * (W - 120), ly = 100 + r() * (H - 200);
-  g.fillStyle = '#a9cfdd';
-  g.beginPath(); g.ellipse(lx, ly, 30 + r() * 40, 20 + r() * 25, r(), 0, Math.PI * 2); g.fill();
-  g.fillStyle = 'rgba(255,255,255,0.45)';
-  g.beginPath(); g.ellipse(lx - 8, ly - 6, 14, 8, 0.4, 0, Math.PI * 2); g.fill();
+  // lakes / water
+  for (let i = 0; i < B.lakes; i++) {
+    const lx = 60 + r() * (W - 120), ly = 100 + r() * (H - 200);
+    g.fillStyle = B.water;
+    g.beginPath(); g.ellipse(lx, ly, 30 + r() * 40, 20 + r() * 25, r(), 0, Math.PI * 2); g.fill();
+    g.fillStyle = 'rgba(255,255,255,0.45)';
+    g.beginPath(); g.ellipse(lx - 8, ly - 6, 14, 8, 0.4, 0, Math.PI * 2); g.fill();
+  }
   return c;
 }
 
@@ -308,7 +363,15 @@ function makeClouds(seed) {
   return c;
 }
 
-const terrains = [makeTerrain(101), makeTerrain(202)];
+const tileCache = {};
+function tilesFor(biome) {
+  if (!tileCache[biome]) {
+    let h = 0;
+    for (const ch of biome) h = (h * 31 + ch.charCodeAt(0)) | 0;
+    tileCache[biome] = [makeTerrain(101 + (h & 0xffff), biome), makeTerrain(202 + (h & 0xffff), biome)];
+  }
+  return tileCache[biome];
+}
 const clouds = makeClouds(303);
 
 // ---------- HUD helpers ----------
@@ -370,9 +433,24 @@ function loop(now) {
 
   const nCmds = wasm.frame(dt, pointer.x, pointer.y, pressed);
   const f = mem();
-  const hud = f.subarray(HUD_PTR, HUD_PTR + 16);
+  const hud = f.subarray(HUD_PTR, HUD_PTR + 24);
   const cmds = f.subarray(DRAW_PTR, DRAW_PTR + nCmds * 6);
   const [mode, score, lives, wave, scroll, bossHp, bossMax, weapon, shieldT, missileT] = hud;
+  const sector = hud[16] | 0, clearT = hud[17];
+  const sec = SECTORS[Math.min(sector, SECTORS.length - 1)];
+
+  // persist checkpoint the moment a sector is secured
+  if (mode === 1 && sector > savedCp) {
+    savedCp = sector;
+    localStorage.setItem(cpKey, String(sector));
+  }
+  if (mode === 3 && lastMode !== 3) {
+    // campaign complete — next run starts fresh from Sir Creek
+    savedCp = 0;
+    localStorage.setItem(cpKey, '0');
+    localStorage.setItem('borderhawk_completed', '1');
+    wasm.set_checkpoint(0);
+  }
 
   // sound events
   const evn = hud[10];
@@ -380,7 +458,7 @@ function loop(now) {
 
   // hi-score
   if (score > hiscore) { hiscore = score; localStorage.setItem(hiKey, String(hiscore)); }
-  if (mode === 1 && wave !== lastWave) { lastWave = wave; waveFlash = 2.0; }
+  if (mode === 1 && wave >= 1 && wave !== lastWave) { lastWave = wave; waveFlash = 2.0; }
   if (mode !== 1) lastWave = 0;
   if (waveFlash > 0) waveFlash -= dt;
   lastMode = mode;
@@ -394,7 +472,7 @@ function loop(now) {
   ctx.save();
   ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip();
 
-  drawScrollLayer(terrains, scroll);
+  drawScrollLayer(tilesFor(sec.biome), scroll);
   drawScrollLayer(clouds, scroll * 1.7, 0.9);
 
   // draw commands
@@ -493,7 +571,9 @@ function loop(now) {
   if (mode === 1 || mode === 2) {
     text(String(score).padStart(6, '0'), 12, 26, 24, '#ffffff', 'left');
     text('HI ' + String(hiscore).padStart(6, '0'), W - 12, 22, 14, '#dce6f0', 'right');
-    text('WAVE ' + wave, W - 12, 44, 14, '#dce6f0', 'right');
+    text('WAVE ' + Math.max(1, wave) + '/5', W - 12, 44, 14, '#dce6f0', 'right');
+    text(`SECTOR ${sector + 1}/10 · ${sec.name}`, W / 2, 24, 13, '#ffffff');
+    text(sec.region, W / 2, 41, 11, '#c8d4e0');
     for (let i = 0; i < lives; i++) {
       ctx.save();
       ctx.translate(24 + i * 26, 56);
@@ -514,9 +594,17 @@ function loop(now) {
       ctx.fillRect(62, 72, (bw - 4) * Math.max(0, bossHp / bossMax), 8);
       text('BOSS', W / 2, 64, 12, '#ffd9d9');
     }
-    if (waveFlash > 0 && mode === 1) {
+    if (clearT > 0 && mode === 1) {
+      // checkpoint secured intermission
+      ctx.globalAlpha = Math.min(1, clearT);
+      text('✔ CHECKPOINT SECURED', W / 2, H * 0.34, 30, '#7fe06a');
+      text('PROGRESS SAVED', W / 2, H * 0.34 + 32, 15, '#dce6f0');
+      text(`ADVANCING TO ${sec.name}`, W / 2, H * 0.34 + 60, 18, '#ffffff');
+      text(sec.region, W / 2, H * 0.34 + 84, 14, '#c8d4e0');
+      ctx.globalAlpha = 1;
+    } else if (waveFlash > 0 && mode === 1) {
       ctx.globalAlpha = Math.min(1, waveFlash);
-      text(wave % 5 === 0 ? '⚠ BOSS INBOUND ⚠' : 'WAVE ' + wave, W / 2, H * 0.38, 34, wave % 5 === 0 ? '#ff5f4f' : '#ffffff');
+      text(wave >= 5 ? '⚠ SECTOR BOSS ⚠' : 'WAVE ' + wave + '/5', W / 2, H * 0.38, 34, wave >= 5 ? '#ff5f4f' : '#ffffff');
       ctx.globalAlpha = 1;
     }
   }
@@ -524,21 +612,41 @@ function loop(now) {
   if (mode === 0) {
     ctx.fillStyle = 'rgba(6,10,16,0.45)';
     ctx.fillRect(0, 0, W, H);
-    tricolorBar(W / 2 - 110, H * 0.30 - 58, 220, 6);
-    text('BORDERHAWK', W / 2, H * 0.30, 52, '#ffffff');
-    text('HIMALAYAN SKIES', W / 2, H * 0.30 + 38, 19, '#ff9933');
-    text('Defend the northern frontier.', W / 2, H * 0.46, 16, '#c8d4e0');
-    text('Drag to fly · cannon auto-fires', W / 2, H * 0.46 + 26, 16, '#c8d4e0');
-    text('W = wing guns · M = Astra missiles · S = shield', W / 2, H * 0.46 + 52, 14, '#9fb0c2');
-    if (Math.floor(now / 600) % 2) text('TAP TO SCRAMBLE', W / 2, H * 0.68, 24, '#ffd23e');
-    if (hiscore > 0) text('HI-SCORE ' + hiscore, W / 2, H * 0.78, 16, '#dce6f0');
+    tricolorBar(W / 2 - 110, H * 0.28 - 58, 220, 6);
+    text('BORDERHAWK', W / 2, H * 0.28, 52, '#ffffff');
+    text('HIMALAYAN SKIES', W / 2, H * 0.28 + 38, 19, '#ff9933');
+    text('THE BORDER CAMPAIGN · 10 SECTORS', W / 2, H * 0.42, 16, '#ffffff');
+    text('Sir Creek → Kibithu, west to east', W / 2, H * 0.42 + 24, 14, '#c8d4e0');
+    text('Drag to fly · cannon auto-fires · boss = checkpoint', W / 2, H * 0.42 + 48, 14, '#c8d4e0');
+    text('W = wing guns · M = Astra missiles · S = shield', W / 2, H * 0.42 + 72, 13, '#9fb0c2');
+    if (savedCp > 0) {
+      const cs = SECTORS[savedCp];
+      if (Math.floor(now / 600) % 2) text('TAP TO CONTINUE', W / 2, H * 0.66, 24, '#ffd23e');
+      text(`CHECKPOINT: SECTOR ${savedCp + 1} · ${cs.name} (${cs.region})`, W / 2, H * 0.66 + 32, 14, '#7fe06a');
+      text('[ NEW CAMPAIGN ]', W / 2, H * 0.86, 16, '#9fb0c2');
+    } else {
+      if (Math.floor(now / 600) % 2) text('TAP TO SCRAMBLE', W / 2, H * 0.66, 24, '#ffd23e');
+      if (localStorage.getItem('borderhawk_completed')) text('★ CAMPAIGN VETERAN ★', W / 2, H * 0.74, 14, '#ffd23e');
+    }
+    if (hiscore > 0) text('HI-SCORE ' + hiscore, W / 2, H * 0.80, 15, '#dce6f0');
   } else if (mode === 2) {
     ctx.fillStyle = 'rgba(6,10,16,0.55)';
     ctx.fillRect(0, 0, W, H);
-    text('MISSION FAILED', W / 2, H * 0.36, 40, '#ff5f4f');
-    text('SCORE ' + score, W / 2, H * 0.36 + 46, 24, '#ffffff');
-    if (score >= hiscore && score > 0) text('★ NEW HI-SCORE ★', W / 2, H * 0.36 + 78, 18, '#ffd23e');
-    if (Math.floor(now / 600) % 2) text('TAP TO RE-SCRAMBLE', W / 2, H * 0.62, 22, '#ffd23e');
+    text('MISSION FAILED', W / 2, H * 0.34, 40, '#ff5f4f');
+    text('SCORE ' + score, W / 2, H * 0.34 + 46, 24, '#ffffff');
+    if (score >= hiscore && score > 0) text('★ NEW HI-SCORE ★', W / 2, H * 0.34 + 78, 18, '#ffd23e');
+    const cs = SECTORS[savedCp];
+    text(`CHECKPOINT SAVED: SECTOR ${savedCp + 1} · ${cs.name}`, W / 2, H * 0.56, 15, '#7fe06a');
+    if (Math.floor(now / 600) % 2) text('TAP TO RE-SCRAMBLE FROM CHECKPOINT', W / 2, H * 0.64, 19, '#ffd23e');
+  } else if (mode === 3) {
+    ctx.fillStyle = 'rgba(6,10,16,0.55)';
+    ctx.fillRect(0, 0, W, H);
+    tricolorBar(W / 2 - 130, H * 0.30 - 50, 260, 8);
+    text('BORDER SECURED', W / 2, H * 0.30, 42, '#7fe06a');
+    text('SIR CREEK → KIBITHU · ALL 10 SECTORS', W / 2, H * 0.30 + 40, 16, '#ffffff');
+    text('The entire frontier is safe. Jai Hind! 🇮🇳', W / 2, H * 0.30 + 68, 16, '#ffd23e');
+    text('SCORE ' + score, W / 2, H * 0.48, 26, '#ffffff');
+    if (Math.floor(now / 600) % 2) text('TAP FOR MENU', W / 2, H * 0.62, 20, '#ffd23e');
   }
 
   ctx.restore();
