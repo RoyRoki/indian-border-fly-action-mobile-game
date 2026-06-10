@@ -20,7 +20,7 @@ const { instance } = await loadWasm();
 const wasm = instance.exports;
 wasm.init((Math.random() * 0xffffffff) >>> 0);
 
-// ---------- campaign: India's border, west → east ----------
+// ---------- campaign 0: India's border, west → east (day) ----------
 const SECTORS = [
   { name: 'SIR CREEK',       region: 'Gujarat',   biome: 'marsh' },
   { name: 'LONGEWALA',       region: 'Rajasthan', biome: 'desert' },
@@ -33,18 +33,45 @@ const SECTORS = [
   { name: 'TAWANG',          region: 'Arunachal', biome: 'alpine' },
   { name: 'KIBITHU–WALONG',  region: 'Arunachal', biome: 'forest' },
 ];
-const cpKey = 'borderhawk_checkpoint';
-let savedCp = Math.min(+(localStorage.getItem(cpKey) || 0), SECTORS.length - 1);
+
+// ---------- campaign 1: VAJRA NIGHTS — Operation First Light ----------
+// Ten night ops (borders 11–20) flown from 22:00 to sunrise, ending at
+// Walong, where India's sun rises first. `phase` 0 = midnight → 1 = morning;
+// `time` is the mission clock shown on the HUD.
+const NIGHT_SECTORS = [
+  { name: 'GHOST CREEK',       region: 'Gujarat',   biome: 'marsh',      phase: 0.00, time: '22:00' },
+  { name: 'THAR MIDNIGHT',     region: 'Rajasthan', biome: 'desert',     phase: 0.00, time: '23:30' },
+  { name: 'AMRITSAR BLACKOUT', region: 'Punjab',    biome: 'plains',     phase: 0.00, time: '00:45' },
+  { name: 'CHENAB SHADOW',     region: 'Jammu',     biome: 'foothills',  phase: 0.02, time: '01:45' },
+  { name: 'ZOJI LA GHOSTPASS', region: 'Ladakh',    biome: 'snow',       phase: 0.05, time: '02:45' },
+  { name: 'KARAKORAM VEIL',    region: 'Ladakh',    biome: 'ice',        phase: 0.10, time: '03:30' },
+  { name: 'CHUSHUL STARFALL',  region: 'Ladakh',    biome: 'highdesert', phase: 0.22, time: '04:15' },
+  { name: 'DOKLAM DAWNWATCH',  region: 'Sikkim',    biome: 'alpine',     phase: 0.45, time: '05:00' },
+  { name: 'SELA FIRSTLIGHT',   region: 'Arunachal', biome: 'alpine',     phase: 0.72, time: '05:40' },
+  { name: 'WALONG SUNRISE',    region: 'Arunachal', biome: 'forest',     phase: 1.00, time: '06:15' },
+];
+
+// Each campaign keeps its own checkpoint — finishing 1–10 does NOT roll into
+// 11–20; Vajra Nights is its own run with its own starting point.
+const cpKeys = ['borderhawk_checkpoint', 'borderhawk_checkpoint_night'];
+let savedCp = cpKeys.map(k => Math.min(+(localStorage.getItem(k) || 0), SECTORS.length - 1));
+let campaign = 0;
+const params = new URLSearchParams(location.search);
+// ?night=1 forces the night campaign (testing/screenshots — skips the lock)
+const forceNight = params.get('night') !== null;
+if (forceNight) campaign = 1;
+wasm.set_campaign(campaign);
 // ?cp=N forces a starting sector (testing/screenshots)
-const cpOverride = new URLSearchParams(location.search).get('cp');
-if (cpOverride !== null) savedCp = Math.min(Math.max(+cpOverride || 0, 0), SECTORS.length - 1);
-wasm.set_checkpoint(savedCp);
+const cpOverride = params.get('cp');
+if (cpOverride !== null) savedCp[campaign] = Math.min(Math.max(+cpOverride || 0, 0), SECTORS.length - 1);
+wasm.set_checkpoint(savedCp[campaign]);
 // ?boss=N jumps straight to a sector's boss fight (testing/screenshots)
-const bossOverride = new URLSearchParams(location.search).get('boss');
+const bossOverride = params.get('boss');
 if (bossOverride !== null) wasm.jump_to_boss(Math.min(Math.max(+bossOverride || 0, 0), SECTORS.length - 1));
 // ?ff=N fast-forwards N engine frames before rendering (testing/screenshots)
-const ff = +(new URLSearchParams(location.search).get('ff') || 0);
+const ff = +(params.get('ff') || 0);
 for (let i = 0; i < ff; i++) wasm.frame(1 / 60, W / 2, H - 140, 0);
+const secArr = () => (campaign === 1 ? NIGHT_SECTORS : SECTORS);
 const mem = () => new Float32Array(wasm.memory.buffer);
 const DRAW_PTR = wasm.draw_ptr() / 4;
 const HUD_PTR = wasm.hud_ptr() / 4;
@@ -65,9 +92,9 @@ resize();
 
 // ---------- input ----------
 // ?autostart=1 skips the menu (handy for testing/screenshots)
-const autostart = new URLSearchParams(location.search).has('autostart');
-let pointer = { x: W / 2, y: H - 140, down: autostart };
-if (autostart) setTimeout(() => { pointer.down = false; }, 300);
+const autostart = params.has('autostart');
+let pointer = { x: W / 2, y: H - 140, down: false };
+if (autostart) wasm.start_game();
 const keys = {};
 function toGame(e) {
   return { x: (e.clientX - ox) / scale, y: (e.clientY - oy) / scale };
@@ -76,13 +103,8 @@ canvas.addEventListener('pointerdown', e => {
   const p = toGame(e);
   unlockAudio();
   e.preventDefault();
-  // "[ NEW CAMPAIGN ]" tap zone on the menu wipes the saved checkpoint
-  if (lastMode === 0 && savedCp > 0 && Math.abs(p.x - W / 2) < 120 && Math.abs(p.y - H * 0.86) < 26) {
-    savedCp = 0;
-    localStorage.setItem(cpKey, '0');
-    wasm.set_checkpoint(0);
-    return; // swallow the tap so it doesn't also start the game
-  }
+  // the menu is a mission-select screen — taps pick a card, not the plane
+  if (lastMode === 0) { menuTap(p, e.timeStamp); return; }
   pointer.x = p.x; pointer.y = p.y - 90; pointer.down = true;
 });
 canvas.addEventListener('pointermove', e => {
@@ -97,6 +119,14 @@ addEventListener('keydown', e => {
   if (e.target && e.target.tagName === 'INPUT') return; // typing in forms
   keys[e.code] = true;
   if (e.code === 'Space' || e.code === 'Enter') unlockAudio();
+  // keyboard mission select: Enter/Space = day campaign, N = night ops
+  if (lastMode === 0 && !uiOpen()) {
+    if (e.code === 'Space' || e.code === 'Enter') startCampaign(0);
+    else if (e.code === 'KeyN') {
+      if (nightUnlocked()) startCampaign(1);
+      else lockedT = 2.2;
+    }
+  }
 });
 addEventListener('keyup', e => {
   if (e.target && e.target.tagName === 'INPUT') return;
@@ -108,6 +138,48 @@ const profKey = 'borderhawk_profile';
 // campaign completions → gold stars (max 5); old saves had only a completed flag
 const winsKey = 'borderhawk_wins';
 let wins = Math.min(5, +(localStorage.getItem(winsKey) || 0) || (localStorage.getItem('borderhawk_completed') ? 1 : 0));
+// Vajra Nights completions → diamonds (max 5)
+const diaKey = 'borderhawk_diamonds';
+let diamonds = Math.min(5, +(localStorage.getItem(diaKey) || 0));
+// the night campaign is for 5-star pilots only
+const nightUnlocked = () => wins >= 5 || forceNight;
+
+// ---------- mission select (menu) ----------
+const CARD_DAY = { x: 36, y: 252, w: W - 72, h: 104 };
+const CARD_NIGHT = { x: 36, y: 376, w: W - 72, h: 196 };
+let lockedT = 0; // "5-star pilots only" flash when tapping the locked card
+const inRect = (p, r) => p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
+function startCampaign(c) {
+  campaign = c;
+  wasm.set_campaign(c);
+  wasm.set_checkpoint(savedCp[c]);
+  wasm.start_game();
+  submitState = '';
+}
+function menuTap(p) {
+  // "↺ RESTART" links (bottom-right strip of each card) clear that
+  // campaign's checkpoint without launching
+  const dayRestart = { x: CARD_DAY.x + CARD_DAY.w - 130, y: CARD_DAY.y + CARD_DAY.h - 34, w: 126, h: 30 };
+  const nightRestart = { x: CARD_NIGHT.x + CARD_NIGHT.w - 130, y: CARD_NIGHT.y + CARD_NIGHT.h - 34, w: 126, h: 30 };
+  if (savedCp[0] > 0 && inRect(p, dayRestart)) {
+    savedCp[0] = 0;
+    localStorage.setItem(cpKeys[0], '0');
+    return;
+  }
+  if (nightUnlocked() && savedCp[1] > 0 && inRect(p, nightRestart)) {
+    savedCp[1] = 0;
+    localStorage.setItem(cpKeys[1], '0');
+    return;
+  }
+  if (inRect(p, CARD_DAY)) { startCampaign(0); return; }
+  if (inRect(p, CARD_NIGHT)) {
+    if (nightUnlocked()) startCampaign(1);
+    else {
+      lockedT = 2.2;
+      tone(150, 0.3, 'sawtooth', 0.08, -70); // denied buzz
+    }
+  }
+}
 let profile = null;
 try { profile = JSON.parse(localStorage.getItem(profKey) || 'null'); } catch { /* corrupt */ }
 let pendingScore = null; // {score, sector} awaiting profile entry
@@ -123,14 +195,22 @@ async function postScore(s) {
     const r = await fetch('/api/leaderboard', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: profile.name, city: profile.city, score: s.score, sector: s.sector, wins }),
+      // night sectors post as 11–20 so the board shows how deep the op went
+      body: JSON.stringify({
+        name: profile.name,
+        city: profile.city,
+        score: s.score,
+        sector: s.sector + (s.night ? 10 : 0),
+        wins,
+        dia: diamonds,
+      }),
     });
     submitState = r.ok ? 'ok' : 'fail';
   } catch { submitState = 'fail'; }
 }
 function maybeSubmit(score, sector) {
   if (score <= 0) return;
-  pendingScore = { score, sector };
+  pendingScore = { score, sector, night: campaign === 1 };
   if (profile?.name) postScore(pendingScore);
   else {
     $('pname').value = profile?.name || '';
@@ -156,23 +236,35 @@ lbbtn.onclick = async () => {
   lbOverlay.classList.add('open');
   $('lbstatus').textContent = 'loading…';
   $('lbrows').innerHTML = '';
+  $('lbpilotcount').textContent = '';
   try {
-    const r = await fetch('/api/leaderboard');
-    const { top } = await r.json();
+    const qs = profile?.name
+      ? `?name=${encodeURIComponent(profile.name)}&city=${encodeURIComponent(profile.city || '')}`
+      : '';
+    const r = await fetch('/api/leaderboard' + qs);
+    const { top, myRank, myEntry, totalPilots } = await r.json();
     if (!top?.length) { $('lbstatus').textContent = 'No scores yet — be the first!'; return; }
     $('lbstatus').textContent = '';
+    if (totalPilots) $('lbpilotcount').textContent = totalPilots;
     const medals = ['🥇', '🥈', '🥉'];
-    $('lbrows').innerHTML = top.map((t, i) => {
-      const me = profile?.name && t.name.toLowerCase() === profile.name.toLowerCase()
-        && (t.city || '').toLowerCase() === (profile.city || '').toLowerCase();
+    const makeRow = (t, rank) => {
+      const me = myRank === rank;
       const stars = t.wins > 0
         ? ` <span class="stars" title="secured the whole border ×${Math.min(t.wins, 5)}">${'★'.repeat(Math.min(t.wins, 5))}</span>`
         : '';
+      const dia = t.dia > 0
+        ? ` <span class="dia" title="Vajra Nights victories ×${Math.min(t.dia, 5)}">${'💎'.repeat(Math.min(t.dia, 5))}</span>`
+        : '';
       return `<div class="row${me ? ' me' : ''}">
-        <span class="rank">${medals[i] || i + 1}</span>
-        <span class="who">${esc(t.name)}${stars} <small>· ${esc(t.city)} · S${(t.sector | 0) + 1}</small></span>
+        <span class="rank">${medals[rank - 1] || rank}</span>
+        <span class="who">${esc(t.name)}${stars}${dia} <small>· ${esc(t.city)} · S${(t.sector | 0) + 1}</small></span>
         <span class="pts">${t.score}</span></div>`;
-    }).join('');
+    };
+    const shown = top.map((t, i) => makeRow(t, i + 1)).join('');
+    const myRow = myRank > 10 && myEntry
+      ? `<div class="row-divider">· · ·</div>` + makeRow(myEntry, myRank)
+      : '';
+    $('lbrows').innerHTML = shown + myRow;
   } catch { $('lbstatus').textContent = 'Could not load leaderboard.'; }
 };
 $('lbclose').onclick = () => lbOverlay.classList.remove('open');
@@ -251,6 +343,38 @@ const sprPlayer = sprite(72, 72, g => {
   g.beginPath(); g.moveTo(0, -30); g.lineTo(26, 16); g.moveTo(0, -30); g.lineTo(-26, 16); g.stroke();
 });
 
+// AMCA "RUDRA" — 5th-gen stealth fighter, flown only in Vajra Nights
+const sprPlayerNight = sprite(72, 72, g => {
+  g.fillStyle = '#343c4a';
+  g.beginPath();
+  g.moveTo(0, -32); g.lineTo(6, -12); g.lineTo(28, 10); g.lineTo(28, 16); g.lineTo(8, 12);
+  g.lineTo(10, 24); g.lineTo(4, 28); g.lineTo(-4, 28); g.lineTo(-10, 24); g.lineTo(-8, 12);
+  g.lineTo(-28, 16); g.lineTo(-28, 10); g.lineTo(-6, -12); g.closePath(); g.fill();
+  g.fillStyle = '#272e3a';
+  g.fillRect(-3, -6, 6, 26);
+  // canted twin tails
+  g.fillStyle = '#2c3442';
+  g.beginPath(); g.moveTo(8, 14); g.lineTo(14, 26); g.lineTo(6, 24); g.closePath(); g.fill();
+  g.beginPath(); g.moveTo(-8, 14); g.lineTo(-14, 26); g.lineTo(-6, 24); g.closePath(); g.fill();
+  // glowing canopy
+  const cgrd = g.createLinearGradient(0, -20, 0, -4);
+  cgrd.addColorStop(0, '#9ff1ff'); cgrd.addColorStop(1, '#1d5f7a');
+  g.fillStyle = cgrd;
+  g.beginPath(); g.ellipse(0, -12, 3.6, 8, 0, 0, Math.PI * 2); g.fill();
+  // cyan leading-edge glow
+  g.strokeStyle = 'rgba(90,220,255,0.85)'; g.lineWidth = 1.6;
+  g.beginPath(); g.moveTo(0, -32); g.lineTo(28, 10); g.moveTo(0, -32); g.lineTo(-28, 10); g.stroke();
+  // engine glow
+  g.fillStyle = 'rgba(120,210,255,0.9)';
+  for (const sx of [-4.5, 4.5]) { g.beginPath(); g.ellipse(sx, 27, 2.6, 4, 0, 0, Math.PI * 2); g.fill(); }
+  // low-visibility roundels
+  g.strokeStyle = 'rgba(160,180,200,0.8)'; g.lineWidth = 1.2;
+  for (const sx of [-17, 17]) {
+    g.beginPath(); g.arc(sx, 11, 4, 0, Math.PI * 2); g.stroke();
+    g.beginPath(); g.arc(sx, 11, 1.6, 0, Math.PI * 2); g.stroke();
+  }
+});
+
 const sprDrone = sprite(44, 44, g => {
   g.fillStyle = '#4a4f57';
   g.fillRect(-13, -3, 26, 6); g.fillRect(-3, -13, 6, 26);
@@ -287,6 +411,37 @@ const sprHeliBody = sprite(64, 60, g => {
   g.beginPath(); g.ellipse(0, 12, 7, 8, 0, 0, Math.PI * 2); g.fill();
   g.fillStyle = '#8c2f2f';
   g.beginPath(); g.arc(0, -24, 4, 0, Math.PI * 2); g.fill();
+});
+
+// ---------- Vajra Nights hostiles ----------
+// phantom drone — black flying wing, nose toward the player, red eye
+const sprPhantom = sprite(48, 44, g => {
+  g.fillStyle = '#1c2026';
+  g.beginPath();
+  g.moveTo(0, 16); g.lineTo(22, -6); g.lineTo(14, -13); g.lineTo(0, -5);
+  g.lineTo(-14, -13); g.lineTo(-22, -6); g.closePath(); g.fill();
+  g.strokeStyle = 'rgba(255,70,70,0.55)'; g.lineWidth = 1.4;
+  g.beginPath(); g.moveTo(-22, -6); g.lineTo(0, 16); g.lineTo(22, -6); g.stroke();
+  g.fillStyle = '#ff4040';
+  g.beginPath(); g.arc(0, 3, 3.2, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#ffd9d9';
+  g.beginPath(); g.arc(0, 3, 1.2, 0, Math.PI * 2); g.fill();
+});
+
+// night hunter — heavy black gunship with weapon pods and an amber visor
+const sprHunter = sprite(76, 64, g => {
+  g.fillStyle = '#181c22'; g.fillRect(-30, 2, 60, 6); // stub wings
+  g.fillStyle = '#23282f';
+  g.beginPath(); g.ellipse(0, 2, 16, 24, 0, 0, Math.PI * 2); g.fill();
+  g.fillRect(-4, -31, 8, 18); // tail boom
+  g.fillStyle = '#11141a';
+  for (const sx of [-26, 26]) g.fillRect(sx - 4, 3, 8, 13); // weapon pods
+  g.fillStyle = '#ff7a2e';
+  g.beginPath(); g.ellipse(0, 14, 8, 7, 0, 0, Math.PI * 2); g.fill(); // visor
+  g.fillStyle = '#ffd9a0';
+  g.beginPath(); g.ellipse(0, 14, 3.4, 3, 0, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#8c2f2f';
+  g.beginPath(); g.arc(0, -28, 3.4, 0, Math.PI * 2); g.fill();
 });
 
 // ---------- the ten sector bosses ----------
@@ -471,6 +626,57 @@ const sprBosses = [
   }),
 ];
 
+// ---------- Vajra Nights boss roster ----------
+// Same ten airframes, rebuilt for night ops: darker hulls, faster patterns,
+// 60% more hull (the engine handles the stats — these are the names).
+const NIGHT_BOSSES = [
+  { name: 'CREEK WRAITH' },
+  { name: 'DUNE REAPER', secret: 'MIDNIGHT SIROCCO' },
+  { name: 'BLACKOUT ACE' },
+  { name: 'SHADOW WARLORD' },
+  { name: 'GLACIER HOWITZER', secret: 'BLIZZARD RAIN' },
+  { name: 'NIGHT PHANTOM' },
+  { name: 'STAR SENTINEL', secret: 'METEOR WHIRL' },
+  { name: 'DARK RAZOR' },
+  { name: 'THUNDER GOD', secret: "HEAVEN'S WRATH" },
+  { name: 'ECLIPSE COMMAND', secret: 'TOTAL ECLIPSE' },
+];
+const bossArr = () => (campaign === 1 ? NIGHT_BOSSES : BOSSES);
+
+// cool-tint a sprite for night ops (keeps shape, darkens + blues the hull)
+function nightify(src, tint = 'rgba(28,40,76,0.55)') {
+  const c = document.createElement('canvas');
+  c.width = src.width; c.height = src.height;
+  const g = c.getContext('2d');
+  g.drawImage(src, 0, 0);
+  g.globalCompositeOperation = 'source-atop';
+  g.fillStyle = tint;
+  g.fillRect(0, 0, c.width, c.height);
+  return c;
+}
+const sprDroneN = nightify(sprDrone);
+const sprJetN = nightify(sprJet);
+const sprHeliBodyN = nightify(sprHeliBody);
+const sprBossesNight = sprBosses.map(s => nightify(s, 'rgba(24,34,70,0.5)'));
+
+// crescent moon / rising sun for the night-to-morning sky
+const sprMoon = sprite(64, 64, g => {
+  g.fillStyle = '#eef2da';
+  g.beginPath(); g.arc(0, 0, 22, 0, Math.PI * 2); g.fill();
+  g.globalCompositeOperation = 'destination-out';
+  g.beginPath(); g.arc(-9, -7, 19, 0, Math.PI * 2); g.fill();
+});
+const sprSun = sprite(120, 120, g => {
+  const grd = g.createRadialGradient(0, 0, 4, 0, 0, 56);
+  grd.addColorStop(0, 'rgba(255,236,170,0.95)');
+  grd.addColorStop(0.35, 'rgba(255,180,80,0.55)');
+  grd.addColorStop(1, 'rgba(255,140,60,0)');
+  g.fillStyle = grd;
+  g.beginPath(); g.arc(0, 0, 56, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#fff3d0';
+  g.beginPath(); g.arc(0, 0, 16, 0, Math.PI * 2); g.fill();
+});
+
 // spinning rotor cross, used by several bosses
 function rotor(x, y, len, ang, width = 4) {
   ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
@@ -485,6 +691,27 @@ const sprBullet = sprite(10, 22, g => {
   grd.addColorStop(0, '#fff7c0'); grd.addColorStop(1, '#ffb02e');
   g.fillStyle = grd;
   g.beginPath(); g.ellipse(0, 0, 3, 9, 0, 0, Math.PI * 2); g.fill();
+});
+
+// RUDRA plasma bolt — the night jet's cannon
+const sprPlasma = sprite(12, 24, g => {
+  const grd = g.createLinearGradient(0, -10, 0, 10);
+  grd.addColorStop(0, '#e8feff'); grd.addColorStop(1, '#39b9ff');
+  g.fillStyle = grd;
+  g.beginPath(); g.ellipse(0, 0, 3, 9, 0, 0, Math.PI * 2); g.fill();
+  g.strokeStyle = 'rgba(120,225,255,0.6)'; g.lineWidth = 1.5;
+  g.beginPath(); g.ellipse(0, 0, 4.4, 10.5, 0, 0, Math.PI * 2); g.stroke();
+});
+
+// hunter homing missile (enemy shot kind 3) — drawn nose-up, rotated to velocity
+const sprHoming = sprite(16, 32, g => {
+  g.fillStyle = 'rgba(255,90,60,0.35)'; // exhaust glow
+  g.beginPath(); g.ellipse(0, 11, 4, 6, 0, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#3a3f47';
+  g.beginPath(); g.moveTo(0, -14); g.lineTo(4, -6); g.lineTo(4, 8); g.lineTo(-4, 8); g.lineTo(-4, -6); g.closePath(); g.fill();
+  g.fillStyle = '#ff4040'; g.fillRect(-4, -2, 8, 4);
+  g.fillStyle = '#ffae3d';
+  g.beginPath(); g.moveTo(-3, 8); g.lineTo(3, 8); g.lineTo(0, 13); g.closePath(); g.fill();
 });
 
 const sprMissile = sprite(14, 30, g => {
@@ -716,6 +943,47 @@ function drawScrollLayer(img, scrollPx, alpha = 1) {
   ctx.globalAlpha = 1;
 }
 
+// rounded-rect path with a fallback for older canvases
+function rr(x, y, w, h, r) {
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x, y, w, h, r);
+  else ctx.rect(x, y, w, h);
+}
+function panel(x, y, w, h, stroke = '#2d415f') {
+  ctx.fillStyle = 'rgba(10,18,32,0.88)';
+  rr(x, y, w, h, 16); ctx.fill();
+  ctx.strokeStyle = stroke; ctx.lineWidth = 1.5;
+  rr(x, y, w, h, 16); ctx.stroke();
+}
+
+// Vajra Nights sky: multiply-tint the terrain from moonlit blue (phase 0)
+// to warm morning light (phase 1), with an orange dawn band in between,
+// plus the moon early on and the rising sun at the end.
+function nightTint(ph, now) {
+  const L = (a, b) => a + (b - a) * ph;
+  ctx.globalCompositeOperation = 'multiply';
+  ctx.fillStyle = `rgb(${L(62, 255) | 0},${L(78, 244) | 0},${L(138, 226) | 0})`;
+  ctx.fillRect(0, 0, W, H);
+  ctx.globalCompositeOperation = 'source-over';
+  if (ph > 0.05 && ph < 0.95) {
+    const a = 0.30 * Math.sin(Math.PI * ph);
+    const gr = ctx.createLinearGradient(0, 0, 0, H * 0.5);
+    gr.addColorStop(0, `rgba(255,140,60,${a.toFixed(3)})`);
+    gr.addColorStop(1, 'rgba(255,140,60,0)');
+    ctx.fillStyle = gr;
+    ctx.fillRect(0, 0, W, H * 0.5);
+  }
+  if (ph < 0.35) {
+    ctx.globalAlpha = 0.85 * (1 - ph / 0.35);
+    ctx.drawImage(sprMoon, W - 96, 64 + Math.sin(now / 2600) * 3);
+    ctx.globalAlpha = 1;
+  } else if (ph > 0.55) {
+    ctx.globalAlpha = Math.min(1, (ph - 0.55) / 0.3);
+    ctx.drawImage(sprSun, W - 130, 40);
+    ctx.globalAlpha = 1;
+  }
+}
+
 function text(str, x, y, size, color, align = 'center', weight = 'bold') {
   ctx.font = `${weight} ${size}px "Avenir Next", "Segoe UI", sans-serif`;
   ctx.textAlign = align;
@@ -759,35 +1027,40 @@ function loop(now) {
   const cmds = f.subarray(DRAW_PTR, DRAW_PTR + nCmds * 6);
   const [mode, score, lives, wave, scroll, bossHp, bossMax, weapon, shieldT, missileT] = hud;
   const sector = hud[16] | 0, clearT = hud[17];
-  const sec = SECTORS[Math.min(sector, SECTORS.length - 1)];
+  const SEC = secArr();
+  const sec = SEC[Math.min(sector, SEC.length - 1)];
+  const night = campaign === 1;
 
-  // persist checkpoint the moment a sector is secured
-  if (mode === 1 && sector > savedCp) {
-    savedCp = sector;
-    localStorage.setItem(cpKey, String(sector));
+  // persist this campaign's checkpoint the moment a sector is secured
+  if (mode === 1 && sector > savedCp[campaign]) {
+    savedCp[campaign] = sector;
+    localStorage.setItem(cpKeys[campaign], String(sector));
   }
-  // score submission + leaderboard button visibility
-  // (gold star is banked before submitting so the entry carries it)
+  // campaign victory: bank the reward BEFORE submitting so the entry
+  // carries it — day run earns a gold star, night op earns a diamond —
+  // and the next run of that campaign starts fresh from its first sector
   if (mode === 3 && lastMode === 1) {
-    wins = Math.min(5, wins + 1);
-    localStorage.setItem(winsKey, String(wins));
+    if (night) {
+      diamonds = Math.min(5, diamonds + 1);
+      localStorage.setItem(diaKey, String(diamonds));
+    } else {
+      wins = Math.min(5, wins + 1);
+      localStorage.setItem(winsKey, String(wins));
+    }
+    localStorage.setItem('borderhawk_completed', '1');
+    savedCp[campaign] = 0;
+    localStorage.setItem(cpKeys[campaign], '0');
+    wasm.set_checkpoint(0);
   }
   if ((mode === 2 || mode === 3) && lastMode === 1) maybeSubmit(score, sector);
   if (mode === 1 && lastMode !== 1) submitState = '';
   lbbtn.style.display = mode !== 1 ? 'block' : 'none';
-  if (mode === 3 && lastMode !== 3) {
-    // campaign complete — next run starts fresh from Sir Creek
-    savedCp = 0;
-    localStorage.setItem(cpKey, '0');
-    localStorage.setItem('borderhawk_completed', '1');
-    wasm.set_checkpoint(0);
-  }
 
   // sound events
   const evn = hud[10];
   for (let i = 0; i < evn; i++) {
     const code = hud[11 + i];
-    if (code === 8) { secretFlash = 3.0; secretName = BOSSES[sector].secret || ''; }
+    if (code === 8) { secretFlash = 3.0; secretName = bossArr()[sector].secret || ''; }
     const fn = SFX[code]; if (fn) fn();
   }
 
@@ -797,6 +1070,7 @@ function loop(now) {
   if (mode !== 1) lastWave = 0;
   if (waveFlash > 0) waveFlash -= dt;
   if (secretFlash > 0) secretFlash -= dt;
+  if (lockedT > 0) lockedT -= dt;
   // sector entry (run start or checkpoint secured) → roll the title card
   if (mode === 1) {
     if (sector !== lastSector) { lastSector = sector; cineT = CINE_T; cineSwell(); }
@@ -826,6 +1100,8 @@ function loop(now) {
     drawScrollLayer(tileFor(curBiome), scroll);
   }
   drawScrollLayer(clouds, scroll * 1.7, 0.9);
+  // Vajra Nights: moonlit terrain that brightens toward sunrise
+  if (night && mode !== 0) nightTint(sec.phase ?? 0, now);
 
   // draw commands
   for (let i = 0; i < nCmds; i++) {
@@ -834,21 +1110,21 @@ function loop(now) {
     ctx.save();
     ctx.translate(x, y);
     switch (kind) {
-      case 0: // player
+      case 0: // player — the RUDRA flies the night ops
         if (aux > 0.5) ctx.globalAlpha = 0.35;
         ctx.rotate(rot);
-        ctx.drawImage(sprPlayer, -36, -36);
+        ctx.drawImage(night ? sprPlayerNight : sprPlayer, -36, -36);
         break;
       case 1:
         ctx.rotate(rot);
-        ctx.drawImage(sprBullet, -5, -11);
+        ctx.drawImage(night ? sprPlasma : sprBullet, -6, -12);
         break;
       case 2:
         ctx.rotate(rot);
         ctx.drawImage(sprMissile, -7, -15);
         break;
       case 3: // drone, rot = prop spin
-        ctx.drawImage(sprDrone, -22, -22);
+        ctx.drawImage(night ? sprDroneN : sprDrone, -22, -22);
         ctx.strokeStyle = 'rgba(40,40,40,0.6)'; ctx.lineWidth = 2;
         for (const [px, py] of [[-11, -11], [11, -11], [-11, 11], [11, 11]]) {
           ctx.save(); ctx.translate(px, py); ctx.rotate(rot);
@@ -858,10 +1134,10 @@ function loop(now) {
         break;
       case 4:
         ctx.rotate(rot);
-        ctx.drawImage(sprJet, -26, -28);
+        ctx.drawImage(night ? sprJetN : sprJet, -26, -28);
         break;
       case 5: // heli, aux = time for rotor
-        ctx.drawImage(sprHeliBody, -32, -30);
+        ctx.drawImage(night ? sprHeliBodyN : sprHeliBody, -32, -30);
         ctx.save(); ctx.rotate(aux * 18);
         ctx.strokeStyle = 'rgba(25,28,24,0.75)'; ctx.lineWidth = 3;
         ctx.beginPath(); ctx.moveTo(-30, 0); ctx.lineTo(30, 0);
@@ -877,7 +1153,7 @@ function loop(now) {
           ctx.fillStyle = 'rgba(120,200,255,0.18)';
           ctx.beginPath(); ctx.arc(0, 0, 56, 0, Math.PI * 2); ctx.fill();
         }
-        ctx.drawImage(sprBosses[v], -75, -60);
+        ctx.drawImage((night ? sprBossesNight : sprBosses)[v], -75, -60);
         switch (v) {
           case 0: for (const fx of [-46, 46]) rotor(fx, 2, 10, aux * 20, 3); break;
           case 1: // engine flicker
@@ -919,13 +1195,16 @@ function loop(now) {
         }
         break;
       }
-      case 7: // enemy shot, aux = kind
+      case 7: // enemy shot, aux = kind, rot = heading
         if (aux === 1) { // cluster shell pulses as the fuse burns
           const p = 1 + 0.15 * Math.sin(now / 70);
           ctx.scale(p, p);
           ctx.drawImage(sprShell, -13, -13);
         } else if (aux === 2) {
           ctx.drawImage(sprBomb, -7, -13);
+        } else if (aux === 3) { // hunter homing missile tracks its heading
+          ctx.rotate(rot);
+          ctx.drawImage(sprHoming, -8, -16);
         } else {
           ctx.drawImage(sprShot, -7, -7);
         }
@@ -964,6 +1243,20 @@ function loop(now) {
         ctx.beginPath(); ctx.arc(0, 0, 38, 0, Math.PI * 2); ctx.stroke();
         ctx.setLineDash([]);
         break;
+      case 11: // phantom drone, aux = time — shimmers like a heat ghost
+        ctx.globalAlpha = 0.72 + 0.26 * Math.sin(aux * 5);
+        ctx.drawImage(sprPhantom, -24, -22);
+        ctx.globalAlpha = 1;
+        if (Math.sin(aux * 9) > 0.3) { // red eye strobe
+          ctx.fillStyle = 'rgba(255,64,64,0.8)';
+          ctx.beginPath(); ctx.arc(0, 3, 5, 0, Math.PI * 2); ctx.fill();
+        }
+        break;
+      case 12: // night hunter, aux = time for rotors
+        ctx.drawImage(sprHunter, -38, -32);
+        rotor(0, -2, 34, aux * 17);
+        rotor(0, -29, 9, aux * 26, 2);
+        break;
     }
     ctx.restore();
   }
@@ -973,8 +1266,14 @@ function loop(now) {
     text(String(score).padStart(6, '0'), 12, 26, 24, '#ffffff', 'left');
     text('HI ' + String(hiscore).padStart(6, '0'), W - 12, 22, 14, '#dce6f0', 'right');
     text('WAVE ' + Math.max(1, wave) + '/5', W - 12, 44, 14, '#dce6f0', 'right');
-    text(`SECTOR ${sector + 1}/10 · ${sec.name}`, W / 2, 24, 13, '#ffffff');
-    text(sec.region, W / 2, 41, 11, '#c8d4e0');
+    if (night) {
+      // night ops defend borders 11–20, flown against the mission clock
+      text(`NIGHT OP ${sector + 1}/10 · ${sec.name}`, W / 2, 24, 13, '#cfe6ff');
+      text(`${sec.region} · 🕐 ${sec.time} HRS`, W / 2, 41, 11, '#9fc0e0');
+    } else {
+      text(`SECTOR ${sector + 1}/10 · ${sec.name}`, W / 2, 24, 13, '#ffffff');
+      text(sec.region, W / 2, 41, 11, '#c8d4e0');
+    }
     for (let i = 0; i < lives; i++) {
       ctx.save();
       ctx.translate(24 + i * 26, 56);
@@ -993,7 +1292,7 @@ function loop(now) {
       ctx.fillRect(60, 70, bw, 12);
       ctx.fillStyle = '#d4382e';
       ctx.fillRect(62, 72, (bw - 4) * Math.max(0, bossHp / bossMax), 8);
-      text(BOSSES[sector].name, W / 2, 64, 12, '#ffd9d9');
+      text(bossArr()[sector].name, W / 2, 64, 12, '#ffd9d9');
     }
     if (clearT > 0 && mode === 1) {
       // checkpoint secured intermission (the title card announces the new area)
@@ -1003,7 +1302,7 @@ function loop(now) {
       ctx.globalAlpha = 1;
     } else if (waveFlash > 0 && mode === 1 && cineT <= 0) {
       ctx.globalAlpha = Math.min(1, waveFlash);
-      text(wave >= 5 ? '⚠ ' + BOSSES[sector].name + ' ⚠' : 'WAVE ' + wave + '/5', W / 2, H * 0.38, 32, wave >= 5 ? '#ff5f4f' : '#ffffff');
+      text(wave >= 5 ? '⚠ ' + bossArr()[sector].name + ' ⚠' : 'WAVE ' + wave + '/5', W / 2, H * 0.38, 32, wave >= 5 ? '#ff5f4f' : '#ffffff');
       ctx.globalAlpha = 1;
     }
     if (secretFlash > 0 && mode === 1) {
@@ -1024,7 +1323,10 @@ function loop(now) {
       ctx.fillStyle = `rgba(6,10,16,${(0.3 * a).toFixed(3)})`;
       ctx.fillRect(0, bh, W, H - 2 * bh);
       ctx.globalAlpha = a;
-      text(`SECTOR ${sector + 1} / 10`, W / 2, H * 0.40 - 46, 15, '#ffd23e');
+      text(
+        night ? `NIGHT OP ${sector + 1} / 10 · BORDER ${11 + sector} OF 20` : `SECTOR ${sector + 1} / 10`,
+        W / 2, H * 0.40 - 46, 15, night ? '#9fe8ff' : '#ffd23e',
+      );
       const z = 1.14 - 0.14 * ss(t / 0.9);
       ctx.save();
       ctx.translate(W / 2, H * 0.40);
@@ -1033,56 +1335,173 @@ function loop(now) {
       ctx.restore();
       const uw = 230 * ss(t / 0.8);
       if (uw > 1) tricolorBar(W / 2 - uw / 2, H * 0.40 + 28, uw, 4);
-      text(sec.region.toUpperCase(), W / 2, H * 0.40 + 56, 16, '#c8d4e0');
+      text(
+        night ? `${sec.region.toUpperCase()} · ${sec.time} HRS` : sec.region.toUpperCase(),
+        W / 2, H * 0.40 + 56, 16, '#c8d4e0',
+      );
       ctx.globalAlpha = 1;
     }
   }
 
+  const blink = Math.floor(now / 600) % 2;
   if (mode === 0) {
-    ctx.fillStyle = 'rgba(6,10,16,0.45)';
+    // ---- mission select ----
+    ctx.fillStyle = 'rgba(6,10,16,0.6)';
     ctx.fillRect(0, 0, W, H);
-    tricolorBar(W / 2 - 110, H * 0.28 - 58, 220, 6);
-    text('BORDERHAWK', W / 2, H * 0.28, 52, '#ffffff');
-    text('HIMALAYAN SKIES', W / 2, H * 0.28 + 38, 19, '#ff9933');
-    text('THE BORDER CAMPAIGN · 10 UNIQUE BOSSES', W / 2, H * 0.42, 16, '#ffffff');
-    text('Sir Creek → Kibithu, west to east', W / 2, H * 0.42 + 24, 14, '#c8d4e0');
-    text('Drag to fly · cannon auto-fires · boss = checkpoint', W / 2, H * 0.42 + 48, 14, '#c8d4e0');
-    text('W = wing guns · M = Astra missiles · S = shield', W / 2, H * 0.42 + 72, 13, '#9fb0c2');
-    if (savedCp > 0) {
-      const cs = SECTORS[savedCp];
-      if (Math.floor(now / 600) % 2) text('TAP TO CONTINUE', W / 2, H * 0.66, 24, '#ffd23e');
-      text(`CHECKPOINT: SECTOR ${savedCp + 1} · ${cs.name} (${cs.region})`, W / 2, H * 0.66 + 32, 14, '#7fe06a');
-      text('[ NEW CAMPAIGN ]', W / 2, H * 0.86, 16, '#9fb0c2');
-    } else {
-      if (Math.floor(now / 600) % 2) text('TAP TO SCRAMBLE', W / 2, H * 0.66, 24, '#ffd23e');
-      if (wins > 0) text(`CAMPAIGN VETERAN ${'★'.repeat(wins)}`, W / 2, H * 0.74, 14, '#ffd23e');
+    tricolorBar(W / 2 - 110, 84, 220, 5);
+    text('BORDERHAWK', W / 2, 126, 50, '#ffffff');
+    text('HIMALAYAN SKIES', W / 2, 160, 18, '#ff9933');
+    // pilot rank: stars from the day campaign, diamonds from the night ops
+    text('★'.repeat(wins) + '☆'.repeat(5 - wins) + (diamonds > 0 ? '  ' + '💎'.repeat(diamonds) : ''), W / 2, 198, 20, '#ffd23e');
+    text(wins >= 5 ? 'WING COMMANDER' : wins > 0 ? `VETERAN PILOT — ${wins}/5 ★` : 'ROOKIE PILOT', W / 2, 222, 11, '#9fb0c2');
+    if (blink) text('▼ SELECT MISSION ▼', W / 2, 242, 11, '#ffd23e');
+
+    {
+      // ☀ card 1 — the day Border Campaign
+      const c = CARD_DAY;
+      panel(c.x, c.y, c.w, c.h, '#3a5070');
+      ctx.save();
+      ctx.translate(c.x + c.w - 48, c.y + 50);
+      ctx.scale(0.85, 0.85);
+      ctx.drawImage(sprPlayer, -36, -36);
+      ctx.restore();
+      text('☀ BORDER CAMPAIGN', c.x + 18, c.y + 24, 17, '#ffffff', 'left');
+      text('Sir Creek → Kibithu · 10 sectors · 10 bosses', c.x + 18, c.y + 45, 11, '#9fb0c2', 'left');
+      if (savedCp[0] > 0) {
+        const cs = SECTORS[savedCp[0]];
+        text(`▶ CONTINUE — SECTOR ${savedCp[0] + 1} · ${cs.name}`, c.x + 18, c.y + 68, 12, '#7fe06a', 'left');
+        text('↺ RESTART', c.x + c.w - 18, c.y + c.h - 16, 11, '#8fa3bb', 'right');
+      } else {
+        text('▶ TAP TO SCRAMBLE', c.x + 18, c.y + 68, 13, blink ? '#ffd23e' : '#e8b22e', 'left');
+      }
+      text('WIN: ★ GOLD STAR', c.x + 18, c.y + c.h - 16, 10, '#ffd23e', 'left');
     }
-    if (hiscore > 0) text('HI-SCORE ' + hiscore, W / 2, H * 0.80, 15, '#dce6f0');
+
+    {
+      // 🌙 card 2 — VAJRA NIGHTS (5-star pilots only)
+      const c = CARD_NIGHT;
+      const open = nightUnlocked();
+      ctx.save();
+      rr(c.x, c.y, c.w, c.h, 16); ctx.clip();
+      const grd = ctx.createLinearGradient(0, c.y, 0, c.y + c.h);
+      grd.addColorStop(0, '#070d24');
+      grd.addColorStop(1, '#102046');
+      ctx.fillStyle = grd;
+      ctx.fillRect(c.x, c.y, c.w, c.h);
+      ctx.fillStyle = '#cfe6ff';
+      for (let i = 0; i < 42; i++) { // twinkling starfield
+        ctx.globalAlpha = (0.25 + 0.7 * Math.abs(Math.sin(now / 650 + i * 1.7))) * (open ? 0.9 : 0.5);
+        ctx.fillRect(c.x + ((i * 97) % c.w), c.y + ((i * 53) % c.h), 1.6, 1.6);
+      }
+      ctx.globalAlpha = 1;
+      ctx.restore();
+      if (open) { ctx.shadowColor = 'rgba(84,200,255,0.8)'; ctx.shadowBlur = 14; }
+      ctx.strokeStyle = open ? '#54c8ff' : '#2a3a5c'; ctx.lineWidth = 1.5;
+      rr(c.x, c.y, c.w, c.h, 16); ctx.stroke();
+      ctx.shadowBlur = 0;
+
+      text('🌙 VAJRA NIGHTS', c.x + 18, c.y + 26, 18, '#bfe9ff', 'left');
+      text('OPERATION FIRST LIGHT · 22:00 → SUNRISE', c.x + 18, c.y + 48, 10, '#8fb0d8', 'left');
+      text('Borders 11–20 · phantom drones, night', c.x + 18, c.y + 74, 11, '#9fc0e0', 'left');
+      text('hunters, homing missiles, elite bosses', c.x + 18, c.y + 90, 11, '#9fc0e0', 'left');
+      text('WIN: +2,00,000 PTS + 💎 DIAMOND', c.x + 18, c.y + 114, 12, '#9fe8ff', 'left');
+      if (!open) { // dim the card, but let the new jet shine through below
+        ctx.fillStyle = 'rgba(6,10,18,0.45)';
+        rr(c.x, c.y, c.w, c.h, 16); ctx.fill();
+      }
+      // the showcase: the AMCA RUDRA, the jet you unlock
+      const bob = Math.sin(now / 600) * 4;
+      ctx.save();
+      ctx.translate(c.x + c.w - 58, c.y + 86 + bob);
+      ctx.shadowColor = 'rgba(90,220,255,0.95)';
+      ctx.shadowBlur = open ? 20 : 14;
+      ctx.scale(1.15, 1.15);
+      ctx.drawImage(sprPlayerNight, -36, -36);
+      ctx.restore();
+      text('NEW JET', c.x + c.w - 58, c.y + 134, 9, '#54c8ff');
+      text('AMCA “RUDRA”', c.x + c.w - 58, c.y + 148, 11, '#bfe9ff');
+      if (open) {
+        if (savedCp[1] > 0) {
+          const cs = NIGHT_SECTORS[savedCp[1]];
+          text(`▶ CONTINUE — NIGHT OP ${savedCp[1] + 1} · ${cs.name}`, c.x + 18, c.y + 152, 12, '#7fe06a', 'left');
+          text('↺ RESTART', c.x + c.w - 18, c.y + c.h - 16, 11, '#8fa3bb', 'right');
+        } else {
+          text('▶ TAP TO LAUNCH NIGHT OPS', c.x + 18, c.y + 152, 13, blink ? '#ffd23e' : '#e8b22e', 'left');
+        }
+        text(`DIAMONDS ${diamonds}/5`, c.x + 18, c.y + c.h - 16, 10, '#9fe8ff', 'left');
+      } else {
+        text(`🔒 LOCKED — ${'★'.repeat(wins)}${'☆'.repeat(5 - wins)}`, c.x + 18, c.y + 152, 14, '#ff9c5a', 'left');
+        text('Promote to ★★★★★ — win the Border Campaign 5×', c.x + 18, c.y + c.h - 20, 10.5, '#c8d4e0', 'left');
+      }
+      if (lockedT > 0 && Math.floor(now / 180) % 2) {
+        text('⚠ 5-STAR PILOTS ONLY ⚠', W / 2, c.y - 10, 14, '#ff5f4f');
+      }
+    }
+
+    if (hiscore > 0) text('HI-SCORE ' + hiscore, W / 2, 602, 14, '#dce6f0');
+    text('Drag to fly · cannon auto-fires · boss = checkpoint', W / 2, 636, 12, '#9fb0c2');
+    text('W = wing guns · M = missiles · S = shield', W / 2, 656, 12, '#9fb0c2');
     text('a game by rokiroy.in', W / 2, H - 18, 12, '#8fa3bb');
   } else if (mode === 2) {
-    ctx.fillStyle = 'rgba(6,10,16,0.55)';
+    // ---- mission failed ----
+    ctx.fillStyle = 'rgba(6,10,16,0.6)';
     ctx.fillRect(0, 0, W, H);
-    text('MISSION FAILED', W / 2, H * 0.34, 40, '#ff5f4f');
-    text('SCORE ' + score, W / 2, H * 0.34 + 46, 24, '#ffffff');
-    if (score >= hiscore && score > 0) text('★ NEW HI-SCORE ★', W / 2, H * 0.34 + 78, 18, '#ffd23e');
-    const cs = SECTORS[savedCp];
-    text(`CHECKPOINT SAVED: SECTOR ${savedCp + 1} · ${cs.name}`, W / 2, H * 0.56, 15, '#7fe06a');
-    if (submitState === 'ok') text('✓ SCORE ON GLOBAL LEADERBOARD', W / 2, H * 0.60, 14, '#ffd23e');
-    else if (submitState === 'sending') text('submitting score…', W / 2, H * 0.60, 14, '#9fb0c2');
-    else if (submitState === 'fail') text('score submit failed', W / 2, H * 0.60, 14, '#ff5f4f');
-    if (Math.floor(now / 600) % 2) text('TAP TO RE-SCRAMBLE FROM CHECKPOINT', W / 2, H * 0.66, 19, '#ffd23e');
+    panel(50, 200, W - 100, 310, night ? '#54c8ff' : '#2d415f');
+    text(night ? 'NIGHT OP FAILED' : 'MISSION FAILED', W / 2, 250, 34, '#ff5f4f');
+    text('SCORE ' + score, W / 2, 296, 24, '#ffffff');
+    if (score >= hiscore && score > 0) text('★ NEW HI-SCORE ★', W / 2, 324, 15, '#ffd23e');
+    const cs = SEC[savedCp[campaign]];
+    text('CHECKPOINT SAVED', W / 2, 358, 11, '#8fa3bb');
+    text(`${night ? 'NIGHT OP' : 'SECTOR'} ${savedCp[campaign] + 1} · ${cs.name}`, W / 2, 378, 15, '#7fe06a');
+    if (submitState === 'ok') text('✓ SCORE ON GLOBAL LEADERBOARD', W / 2, 410, 12, '#ffd23e');
+    else if (submitState === 'sending') text('submitting score…', W / 2, 410, 12, '#9fb0c2');
+    else if (submitState === 'fail') text('score submit failed', W / 2, 410, 12, '#ff5f4f');
+    if (blink) text('TAP TO RE-SCRAMBLE', W / 2, 460, 19, '#ffd23e');
+  } else if (mode === 3 && night) {
+    // ---- Vajra Nights complete: first light over Walong ----
+    ctx.fillStyle = 'rgba(6,10,16,0.6)';
+    ctx.fillRect(0, 0, W, H);
+    panel(40, 168, W - 80, 350, '#54c8ff');
+    tricolorBar(W / 2 - 110, 190, 220, 6);
+    text('FIRST LIGHT SECURED', W / 2, 228, 34, '#9fe8ff');
+    text('ALL 10 NIGHT OPS · BORDERS 11–20 SAFE', W / 2, 262, 14, '#ffffff');
+    text('🌅 Sunrise over Walong. Jai Hind! 🇮🇳', W / 2, 288, 14, '#ffd23e');
+    text('SCORE ' + score, W / 2, 326, 24, '#ffffff');
+    text('+2,00,000 NIGHT BONUS', W / 2, 356, 15, '#ffd23e');
+    text('💎 DIAMOND EARNED', W / 2, 386, 17, '#9fe8ff');
+    text('💎'.repeat(diamonds) + '◇'.repeat(5 - diamonds), W / 2, 416, 20, '#9fe8ff');
+    if (submitState === 'ok') text('✓ SCORE ON GLOBAL LEADERBOARD', W / 2, 448, 12, '#ffd23e');
+    if (blink) text('TAP FOR MENU', W / 2, 486, 18, '#ffd23e');
   } else if (mode === 3) {
-    ctx.fillStyle = 'rgba(6,10,16,0.55)';
+    // ---- day campaign complete ----
+    ctx.fillStyle = 'rgba(6,10,16,0.6)';
     ctx.fillRect(0, 0, W, H);
-    tricolorBar(W / 2 - 130, H * 0.30 - 50, 260, 8);
-    text('BORDER SECURED', W / 2, H * 0.30, 42, '#7fe06a');
-    text('SIR CREEK → KIBITHU · ALL 10 SECTORS', W / 2, H * 0.30 + 40, 16, '#ffffff');
-    text('The entire frontier is safe. Jai Hind! 🇮🇳', W / 2, H * 0.30 + 68, 16, '#ffd23e');
-    text('SCORE ' + score, W / 2, H * 0.48, 26, '#ffffff');
-    if (submitState === 'ok') text('✓ SCORE ON GLOBAL LEADERBOARD', W / 2, H * 0.53, 14, '#ffd23e');
-    text('★'.repeat(wins) + '☆'.repeat(5 - wins), W / 2, H * 0.57, 24, '#ffd23e');
-    text('GOLD STAR EARNED — shown by your name on the leaderboard', W / 2, H * 0.57 + 24, 12, '#dce6f0');
-    if (Math.floor(now / 600) % 2) text('TAP FOR MENU', W / 2, H * 0.64, 20, '#ffd23e');
+    panel(40, 150, W - 80, 420, '#2d415f');
+    tricolorBar(W / 2 - 110, 172, 220, 6);
+    text('BORDER SECURED', W / 2, 210, 36, '#7fe06a');
+    text('SIR CREEK → KIBITHU · ALL 10 SECTORS', W / 2, 244, 14, '#ffffff');
+    text('The entire frontier is safe. Jai Hind! 🇮🇳', W / 2, 268, 14, '#ffd23e');
+    text('SCORE ' + score, W / 2, 304, 24, '#ffffff');
+    text('★'.repeat(wins) + '☆'.repeat(5 - wins), W / 2, 338, 22, '#ffd23e');
+    text('GOLD STAR EARNED — shown by your name on the board', W / 2, 362, 11, '#dce6f0');
+    if (wins >= 5) {
+      // the promotion moment: Vajra Nights opens up
+      ctx.shadowColor = 'rgba(84,200,255,0.8)'; ctx.shadowBlur = 12;
+      ctx.strokeStyle = '#54c8ff'; ctx.lineWidth = 1.5;
+      rr(64, 384, W - 128, 92, 12); ctx.stroke();
+      ctx.shadowBlur = 0;
+      ctx.save();
+      ctx.translate(102, 430);
+      ctx.drawImage(sprPlayerNight, -36, -36);
+      ctx.restore();
+      text('🔓 VAJRA NIGHTS UNLOCKED', 272, 414, 16, '#9fe8ff');
+      text('Your AMCA “RUDRA” awaits —', 272, 438, 12, '#bfe9ff');
+      text('10 night ops · +2,00,000 + 💎 per win', 272, 456, 12, '#bfe9ff');
+    } else {
+      text(`${5 - wins} more ★ to unlock VAJRA NIGHTS + the AMCA jet`, W / 2, 412, 12, '#9fc0e0');
+    }
+    if (submitState === 'ok') text('✓ SCORE ON GLOBAL LEADERBOARD', W / 2, 496, 12, '#ffd23e');
+    if (blink) text('TAP FOR MENU', W / 2, 532, 18, '#ffd23e');
   }
 
   ctx.restore();

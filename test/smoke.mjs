@@ -7,7 +7,7 @@ const w = instance.exports;
 
 const fail = (msg) => { console.error('FAIL:', msg); process.exit(1); };
 
-for (const name of ['init', 'frame', 'draw_ptr', 'hud_ptr', 'set_checkpoint', 'memory'])
+for (const name of ['init', 'frame', 'draw_ptr', 'hud_ptr', 'set_checkpoint', 'set_campaign', 'start_game', 'memory'])
   if (!(name in w)) fail(`missing export ${name}`);
 
 w.init(42);
@@ -15,9 +15,10 @@ const hud = () => new Float32Array(w.memory.buffer, w.hud_ptr(), 24);
 const dt = 1 / 60;
 
 // checkpoint resume: a saved sector 6 game starts in sector 6
+// (the menu lives in JS now — games start via start_game(), not a raw tap)
 w.set_checkpoint(6);
+w.start_game();
 w.frame(dt, 240, 600, 0);
-w.frame(dt, 240, 600, 1);
 if (hud()[0] !== 1) fail('checkpoint game did not start');
 if (hud()[16] !== 6) fail('set_checkpoint(6) ignored, sector=' + hud()[16]);
 console.log('checkpoint resume: OK (started in sector 6)');
@@ -26,13 +27,17 @@ w.set_checkpoint(0);
 for (let i = 0; i < 200; i++) w.frame(dt, 240, 600, 0); // settle
 w.init(42);
 
-// menu idles
+// menu idles — and a raw tap must NOT start a game (JS owns the menu)
 let n = w.frame(dt, 240, 600, 0);
 if (hud()[0] !== 0) fail('expected menu mode 0');
-
-// tap to start
 w.frame(dt, 240, 600, 1);
-if (hud()[0] !== 1) fail('tap did not start game, mode=' + hud()[0]);
+w.frame(dt, 240, 600, 0);
+if (hud()[0] !== 0) fail('menu tap started a game, mode=' + hud()[0]);
+
+// start via the explicit export
+w.start_game();
+w.frame(dt, 240, 600, 0);
+if (hud()[0] !== 1) fail('start_game did not start game, mode=' + hud()[0]);
 
 // play 60 simulated seconds chasing the middle; count draw cmds sanity
 let maxCmds = 0, sawEnemyDraw = false, sawEvents = 0;

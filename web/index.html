@@ -57,8 +57,14 @@
   .row .who { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row .who small { color: #8fa3bb; }
   .row .who .stars { color: #ffd23e; text-shadow: 0 0 6px rgba(255,210,62,0.55); letter-spacing: 1px; }
+  .row .who .dia { font-size: 11px; letter-spacing: 1px; filter: drop-shadow(0 0 4px rgba(84,200,255,0.7)); }
   .row .pts { font-weight: 700; color: #ffd23e; }
   .row.me { background: rgba(255,153,51,0.12); border-radius: 6px; }
+  .row-divider { text-align: center; color: #3a5070; font-size: 13px; padding: 6px 0; letter-spacing: 4px; }
+  .lb-title-row { display: flex; align-items: center; justify-content: space-between; }
+  .lb-title-row h2 { margin: 0; }
+  .lb-pilot-count { display: flex; align-items: center; gap: 4px; color: #8fa3bb; font-size: 13px; }
+  .lb-pilot-count svg { opacity: 0.7; flex-shrink: 0; }
   .medal { color: #ffd23e; }
   #lbstatus { color: #8fa3bb; font-size: 13px; padding: 12px 0; text-align: center; }
   #lbbtn {
@@ -87,8 +93,11 @@
 
 <div class="overlay" id="lbOverlay">
   <div class="panel">
-    <h2>🏆 TOP PILOTS</h2>
-    <div class="sub">Best score per pilot · all sectors</div>
+    <div class="lb-title-row">
+      <h2>🏆 TOP PILOTS</h2>
+      <span class="lb-pilot-count"><svg viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm-5 6a5 5 0 0 1 10 0H3z"/></svg><span id="lbpilotcount"></span></span>
+    </div>
+    <div class="sub">Best score per pilot · ★ border wins · 💎 Vajra Nights</div>
     <div id="lbstatus">loading…</div>
     <div id="lbrows"></div>
     <button class="btn" id="lbclose">CLOSE</button>

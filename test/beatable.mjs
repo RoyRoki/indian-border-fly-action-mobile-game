@@ -2,18 +2,20 @@
 // If this bot can secure Kibithu, a decent human can finish the campaign.
 import { readFile } from 'node:fs/promises';
 
-const buf = await readFile(new URL('../web/game.wasm', import.meta.url));
+const buf = await readFile(process.env.WASM ?? new URL('../web/game.wasm', import.meta.url));
 const { instance } = await WebAssembly.instantiate(buf, {});
 const w = instance.exports;
 const W = 480, H = 800, dt = 1 / 60;
-w.init(29);
+w.init(+(process.env.SEED ?? 29));
 const hud = () => new Float32Array(w.memory.buffer, w.hud_ptr(), 24);
 const drawAt = (n) => new Float32Array(w.memory.buffer, w.draw_ptr(), n * 6);
 
 const startSector = +(process.argv[2] ?? 9);
+const night = process.argv[3] === 'night'; // probe the Vajra Nights campaign
+if (w.set_campaign) w.set_campaign(night ? 1 : 0);
 w.set_checkpoint(startSector);
-w.frame(dt, 240, 600, 0);
-w.frame(dt, 240, 600, 1);
+if (w.start_game) { w.start_game(); w.frame(dt, 240, 600, 0); }
+else { w.frame(dt, 240, 600, 0); w.frame(dt, 240, 600, 1); } // pre-start_game engines tap-start
 
 let tx = 240, ty = 640;
 let victory = false, deaths = 0, maxWave = 0, metBoss = false, minBossHp = Infinity;
@@ -30,6 +32,8 @@ for (let i = 0; i < LIMIT && !victory; i++) {
     tx = 240; ty = 640;
     continue;
   }
+  // night hunters fire homing missiles (kind 3 shots are drawn rotated but
+  // still kind 7 draws) — the column model handles them like aimed shots
   maxWave = Math.max(maxWave, h[3]);
   if (h[6] > 0) { metBoss = true; minBossHp = Math.min(minBossHp, h[5]); }
 
@@ -70,5 +74,5 @@ for (let i = 0; i < LIMIT && !victory; i++) {
 }
 
 const h = hud();
-console.log(`sector ${startSector}: victory=${victory} deaths=${deaths} maxWave=${maxWave} metBoss=${metBoss} minBossHp=${minBossHp === Infinity ? '-' : minBossHp.toFixed(0)} endSector=${h[16]}`);
+console.log(`${night ? 'NIGHT ' : ''}sector ${startSector}: victory=${victory} deaths=${deaths} maxWave=${maxWave} metBoss=${metBoss} minBossHp=${minBossHp === Infinity ? '-' : minBossHp.toFixed(0)} endSector=${h[16]}`);
 process.exit(victory || (startSector < 9 && h[16] > startSector) ? 0 : 1);

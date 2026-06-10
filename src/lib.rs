@@ -14,7 +14,10 @@ const NP: usize = 8; // powerups
 const NT: usize = 160; // particles
 const MAXD: usize = 420; // max draw commands
 
-// Campaign: India's border west→east, 10 checkpoint sectors.
+// Campaigns: India's border west→east, 10 checkpoint sectors each.
+//   0 = Border Campaign (day)
+//   1 = Vajra Nights (night ops; harder, new enemy types, weapon lvl 4,
+//       homing missiles, +200k victory bonus — JS awards the diamond)
 // Each sector = waves 1..=5; wave 5 is the sector boss. Killing it secures
 // the checkpoint (JS persists it) and advances to the next sector.
 const NSECTORS: u32 = 10;
@@ -32,6 +35,8 @@ const D_SHOT: f32 = 7.0;
 const D_POW: f32 = 8.0;
 const D_PART: f32 = 9.0;
 const D_SHIELD: f32 = 10.0;
+const D_PHANTOM: f32 = 11.0; // night stealth drone
+const D_HUNTER: f32 = 12.0; // night hunter gunship
 
 // sound events
 const EV_SHOOT: f32 = 1.0;
@@ -105,6 +110,7 @@ struct Pt {
 
 struct Game {
     mode: u32, // 0 menu, 1 playing, 2 game over, 3 campaign victory
+    campaign: u32, // 0 day Border Campaign, 1 Vajra Nights
     rng: u32,
     score: u32,
     lives: i32,
@@ -170,6 +176,7 @@ const ZT: Pt = Pt {
 
 static mut GAME: Game = Game {
     mode: 0,
+    campaign: 0,
     rng: 0x1234_5678,
     score: 0,
     lives: 3,
@@ -202,7 +209,7 @@ static mut GAME: Game = Game {
 
 // HUD: 0 mode, 1 score, 2 lives, 3 wave (within sector), 4 scroll, 5 boss hp,
 //      6 boss max, 7 weapon lvl, 8 shield t, 9 missile t, 10 event count,
-//      11..16 events, 16 sector, 17 checkpoint-secured timer
+//      11..16 events, 16 sector, 17 checkpoint-secured timer, 18 campaign
 static mut HUD: [f32; 24] = [0.0; 24];
 static mut DRAW: [f32; MAXD * 6] = [0.0; MAXD * 6];
 
@@ -353,13 +360,16 @@ fn enemy_radius(kind: u8) -> f32 {
         0 => 17.0,
         1 => 19.0,
         2 => 25.0,
+        4 => 16.0,
+        5 => 27.0,
         _ => 54.0,
     }
 }
 
-// global difficulty: grows across the whole campaign, west to east
+// global difficulty: grows across the whole campaign, west to east.
+// Vajra Nights starts past the end of the day campaign and keeps climbing.
 fn diff(g: &Game) -> u32 {
-    g.sector * WAVES_PER_SECTOR + g.wave
+    g.campaign * 55 + g.sector * WAVES_PER_SECTOR + g.wave
 }
 
 fn start_wave(g: &mut Game, h: &mut [f32; 24]) {
@@ -369,9 +379,11 @@ fn start_wave(g: &mut Game, h: &mut [f32; 24]) {
         // per-boss hull multiplier (fortress/dragon are tanks, the ace is nimble)
         const HPM: [f32; 10] = [1.0, 1.35, 0.85, 1.0, 1.05, 0.9, 1.0, 1.0, 1.05, 1.15];
         let s = g.sector.min(NSECTORS - 1) as usize;
+        // night bosses are the hardest machines in the game
+        let night_hp = if g.campaign == 1 { 1.6 } else { 1.0 };
         for e in g.enemies.iter_mut() {
             if !e.alive {
-                let hp = (50.0 + (g.sector * WAVES_PER_SECTOR + WAVES_PER_SECTOR) as f32 * 4.5) * HPM[s];
+                let hp = (50.0 + (g.sector * WAVES_PER_SECTOR + WAVES_PER_SECTOR) as f32 * 4.5) * HPM[s] * night_hp;
                 *e = Enemy {
                     alive: true,
                     kind: 3,
@@ -397,6 +409,9 @@ fn start_wave(g: &mut Game, h: &mut [f32; 24]) {
             }
         }
         push_ev(h, EV_BOSS);
+    } else if g.campaign == 1 {
+        g.spawn_left = (4 + g.wave * 2 + g.sector * 2).min(16);
+        g.spawn_cd = 0.7;
     } else {
         g.spawn_left = (3 + g.wave * 2 + g.sector).min(12);
         g.spawn_cd = 0.8;
@@ -406,8 +421,22 @@ fn start_wave(g: &mut Game, h: &mut [f32; 24]) {
 fn spawn_enemy(g: &mut Game) {
     let d = diff(g);
     let wave = d as f32;
+    let night = g.campaign == 1;
     let r = rnd(&mut g.rng);
-    let kind: u8 = if d >= 4 && r < 0.18 {
+    let kind: u8 = if night {
+        // night skies: phantom drones and hunter gunships join the fight
+        if d >= 58 && r < 0.15 {
+            5
+        } else if r < 0.36 {
+            4
+        } else if r < 0.60 {
+            1
+        } else if r < 0.74 {
+            2
+        } else {
+            0
+        }
+    } else if d >= 4 && r < 0.18 {
         2
     } else if d >= 2 && r < 0.50 {
         1
@@ -420,6 +449,40 @@ fn spawn_enemy(g: &mut Game) {
             continue;
         }
         *e = match kind {
+            4 => Enemy {
+                // phantom drone: fast serpentine stealth wing, aimed plasma fans
+                alive: true,
+                kind: 4,
+                x,
+                y: -30.0,
+                vx: 0.0,
+                vy: 150.0 + ((d - 55) as f32 * 3.0).min(80.0),
+                hp: 3.0,
+                maxhp: 3.0,
+                t: 0.0,
+                cd: 1.0 + rnd(&mut g.rng) * 0.8,
+                phase: rnd(&mut g.rng) * PI * 2.0,
+                bx: x,
+                ty: 0.0,
+                pat: 0,
+            },
+            5 => Enemy {
+                // night hunter: heavy gunship, homing missiles + wide spreads
+                alive: true,
+                kind: 5,
+                x,
+                y: -50.0,
+                vx: 0.0,
+                vy: 85.0,
+                hp: 16.0 + ((d - 55) as f32 * 0.4).min(10.0),
+                maxhp: 16.0 + ((d - 55) as f32 * 0.4).min(10.0),
+                t: 0.0,
+                cd: 1.8,
+                phase: rnd(&mut g.rng) * PI * 2.0,
+                bx: x,
+                ty: 90.0 + rnd(&mut g.rng) * 140.0,
+                pat: 0,
+            },
             0 => Enemy {
                 alive: true,
                 kind: 0,
@@ -469,6 +532,12 @@ fn spawn_enemy(g: &mut Game) {
                 pat: 0,
             },
         };
+        if night && kind < 3 {
+            // the regulars fly meaner at night
+            e.hp *= 2.0;
+            e.maxhp = e.hp;
+            e.vy *= 1.1;
+        }
         break;
     }
 }
@@ -526,6 +595,22 @@ pub extern "C" fn init(seed: u32) {
 #[unsafe(no_mangle)]
 pub extern "C" fn set_checkpoint(sector: u32) {
     game().start_sector = sector.min(NSECTORS - 1);
+}
+
+// Which campaign the next game runs: 0 day, 1 Vajra Nights.
+#[unsafe(no_mangle)]
+pub extern "C" fn set_campaign(c: u32) {
+    game().campaign = c.min(1);
+}
+
+// The menu lives in JS (it owns the campaign lock), so JS starts games
+// explicitly instead of the engine reacting to a raw menu tap.
+#[unsafe(no_mangle)]
+pub extern "C" fn start_game() {
+    let g = game();
+    if g.mode != 1 {
+        reset_game(g, hud());
+    }
 }
 
 // Debug/testing: start playing right at a sector's boss (JS: ?boss=N).
@@ -593,11 +678,8 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
     }
 
     match g.mode {
-        0 => {
-            if tap {
-                reset_game(g, h);
-            }
-        }
+        // 0 (menu): taps are handled by JS — it picks the campaign and
+        // calls start_game(), so a bare tap here does nothing.
         2 => {
             g.over_t += dt;
             if g.over_t > 0.8 && tap {
@@ -666,10 +748,18 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
                     spawn_bullet(&mut g.bullets, false, g.px - 12.0, g.py - 20.0, 0.0, -560.0);
                     spawn_bullet(&mut g.bullets, false, g.px + 12.0, g.py - 20.0, 0.0, -560.0);
                 }
-                _ => {
+                3 => {
                     spawn_bullet(&mut g.bullets, false, g.px, g.py - 26.0, 0.0, -580.0);
                     spawn_bullet(&mut g.bullets, false, g.px - 14.0, g.py - 18.0, -105.0, -555.0);
                     spawn_bullet(&mut g.bullets, false, g.px + 14.0, g.py - 18.0, 105.0, -555.0);
+                }
+                _ => {
+                    // level 4 — Vajra Nights only: the RUDRA's full plasma array
+                    spawn_bullet(&mut g.bullets, false, g.px, g.py - 28.0, 0.0, -620.0);
+                    spawn_bullet(&mut g.bullets, false, g.px - 11.0, g.py - 22.0, 0.0, -590.0);
+                    spawn_bullet(&mut g.bullets, false, g.px + 11.0, g.py - 22.0, 0.0, -590.0);
+                    spawn_bullet(&mut g.bullets, false, g.px - 19.0, g.py - 14.0, -140.0, -550.0);
+                    spawn_bullet(&mut g.bullets, false, g.px + 19.0, g.py - 14.0, 140.0, -550.0);
                 }
             }
             push_ev(h, EV_SHOOT);
@@ -679,9 +769,12 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
         if g.mtimer > 0.0 {
             g.mcd -= dt;
             if g.mcd <= 0.0 {
-                g.mcd = 0.55;
+                g.mcd = if g.campaign == 1 { 0.45 } else { 0.55 };
                 spawn_bullet(&mut g.bullets, true, g.px - 18.0, g.py, -60.0, -260.0);
                 spawn_bullet(&mut g.bullets, true, g.px + 18.0, g.py, 60.0, -260.0);
+                if g.campaign == 1 {
+                    spawn_bullet(&mut g.bullets, true, g.px, g.py - 12.0, 0.0, -300.0);
+                }
                 push_ev(h, EV_MISSILE);
             }
         }
@@ -763,6 +856,32 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
                                 (ux * c - uy * s) * 200.0,
                                 (ux * s + uy * c) * 200.0,
                             );
+                        }
+                    }
+                }
+                4 => {
+                    // phantom drone: fast serpentine, fires aimed plasma fans
+                    e.x = (e.bx + (e.t * 3.2 + e.phase).sin() * 95.0).clamp(24.0, W - 24.0);
+                    e.y += e.vy * dt;
+                    if e.cd <= 0.0 && e.y > 20.0 && e.y < ppy - 80.0 {
+                        e.cd = 1.5;
+                        aimed_spread(&mut g.shots, e.x, e.y, ppx, ppy, 3, 0.3, 290.0);
+                    }
+                }
+                5 => {
+                    // night hunter: hover, then alternate homing missiles / 5-spreads
+                    if e.y < e.ty {
+                        e.y += e.vy * dt;
+                    } else {
+                        e.x = (e.bx + (e.t * 0.8 + e.phase).sin() * 120.0).clamp(34.0, W - 34.0);
+                    }
+                    if e.cd <= 0.0 && e.y > 20.0 {
+                        e.cd = 2.1;
+                        e.pat += 1;
+                        if e.pat % 2 == 1 {
+                            spawn_shot_k(&mut g.shots, 3, 4.5, e.x, e.y + 22.0, 0.0, 140.0);
+                        } else {
+                            aimed_spread(&mut g.shots, e.x, e.y, ppx, ppy, 5, 0.2, 210.0);
                         }
                     }
                 }
@@ -975,6 +1094,10 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
                                 }
                             }
                         }
+                        if g.campaign == 1 {
+                            // night bosses cycle their patterns notably faster
+                            e.cd *= 0.78;
+                        }
                     }
                 }
             }
@@ -1025,6 +1148,22 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
         for si in 0..NS {
             if !g.shots[si].alive {
                 continue;
+            }
+            if g.shots[si].kind == 3 {
+                // hunter missile: tracks the player until its motor burns out
+                g.shots[si].t -= dt;
+                if g.shots[si].t <= 0.0 {
+                    let (sx, sy) = (g.shots[si].x, g.shots[si].y);
+                    g.shots[si].alive = false;
+                    spark(&mut g.parts, &mut g.rng, sx, sy, 4);
+                    continue;
+                }
+                let dx = g.px - g.shots[si].x;
+                let dy = g.py - g.shots[si].y;
+                let len = (dx * dx + dy * dy).sqrt().max(1.0);
+                let k = (dt * 2.4).min(1.0);
+                g.shots[si].vx += (dx / len * 215.0 - g.shots[si].vx) * k;
+                g.shots[si].vy += (dy / len * 215.0 - g.shots[si].vy) * k;
             }
             g.shots[si].x += g.shots[si].vx * dt;
             g.shots[si].y += g.shots[si].vy * dt;
@@ -1081,7 +1220,9 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
                             0 => (100, false),
                             1 => (250, false),
                             2 => (400, true),
-                            _ => (5000, true),
+                            4 => (350, false),
+                            5 => (700, true),
+                            _ => (if g.campaign == 1 { 8000 } else { 5000 }, true),
                         };
                         g.score += sc;
                         boom(&mut g.parts, &mut g.rng, e.x, e.y, if big { 34 } else { 14 }, big);
@@ -1095,6 +1236,11 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
                                 s.alive = false;
                             }
                             if g.sector + 1 >= NSECTORS {
+                                if g.campaign == 1 {
+                                    // Vajra Nights victory: 2,00,000-point bonus
+                                    // (JS banks the diamond alongside it)
+                                    g.score += 200_000;
+                                }
                                 g.mode = 3;
                                 g.over_t = 0.0;
                             } else {
@@ -1165,7 +1311,8 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
                 g.pows[pi].alive = false;
                 match p.kind {
                     // weapon upgrades are permanent; getting hit degrades one level
-                    0 => g.weapon = (g.weapon + 1).min(3),
+                    // (the night jet carries a fourth, full-array stage)
+                    0 => g.weapon = (g.weapon + 1).min(if g.campaign == 1 { 4 } else { 3 }),
                     1 => {
                         g.mtimer = 12.0;
                         g.mcd = 0.0;
@@ -1235,6 +1382,8 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
             0 => emit(&mut n, D_DRONE, e.x, e.y, e.t * 6.0, 1.0, 0.0),
             1 => emit(&mut n, D_JET, e.x, e.y, (e.vx * 0.004).clamp(-0.5, 0.5), 1.0, 0.0),
             2 => emit(&mut n, D_HELI, e.x, e.y, 0.0, 1.0, e.t),
+            4 => emit(&mut n, D_PHANTOM, e.x, e.y, 0.0, 1.0, e.t),
+            5 => emit(&mut n, D_HUNTER, e.x, e.y, 0.0, 1.0, e.t),
             _ => {
                 // rot carries the variant (+0.5 once the secret weapon is live)
                 let v = g.sector.min(NSECTORS - 1) as f32 + if e.phase > 0.5 { 0.5 } else { 0.0 };
@@ -1246,7 +1395,8 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
     }
     for s in g.shots.iter() {
         if s.alive {
-            emit(&mut n, D_SHOT, s.x, s.y, 0.0, 1.0, s.kind as f32);
+            // rot points along the velocity so missile-type shots can rotate
+            emit(&mut n, D_SHOT, s.x, s.y, s.vx.atan2(-s.vy), 1.0, s.kind as f32);
         }
     }
     if g.mode == 1 || g.mode == 3 {
@@ -1269,6 +1419,7 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
     h[9] = g.mtimer.max(0.0);
     h[16] = g.sector as f32;
     h[17] = g.clear_t.max(0.0);
+    h[18] = g.campaign as f32;
 
     n as u32
 }
