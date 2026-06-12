@@ -749,9 +749,9 @@ const sprBomb = sprite(14, 26, g => {
   g.fillStyle = '#4d565b'; g.fillRect(-6, -9, 12, 3); // fins
 });
 
-const POW_COLORS = ['#ff9933', '#e84d4d', '#3da5ff'];
-const POW_LETTERS = ['W', 'M', 'S'];
-const sprPows = [0, 1, 2].map(k => sprite(40, 40, g => {
+const POW_COLORS = ['#ff9933', '#e84d4d', '#3da5ff', '#44dd88'];
+const POW_LETTERS = ['W', 'M', 'S', '♥'];
+const sprPows = [0, 1, 2, 3].map(k => sprite(40, 40, g => {
   g.fillStyle = POW_COLORS[k];
   g.beginPath(); g.arc(0, 0, 15, 0, Math.PI * 2); g.fill();
   g.fillStyle = '#ffffff';

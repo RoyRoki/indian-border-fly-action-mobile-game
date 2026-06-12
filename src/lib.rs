@@ -90,7 +90,7 @@ struct Shot {
 #[derive(Clone, Copy)]
 struct Pw {
     alive: bool,
-    kind: u8, // 0 weapon, 1 missiles, 2 shield
+    kind: u8, // 0 weapon, 1 missiles, 2 shield, 3 extra-life (Vajra only)
     x: f32,
     y: f32,
 }
@@ -131,7 +131,7 @@ struct Game {
     shield: f32,
     ccd: f32,
     mcd: f32,
-    life_cd: f32,
+    life_pows: u8, // Vajra: life pickups dropped this run (cap 5)
     trail_cd: f32,
     snow_cd: f32,
     // wave spawning
@@ -197,7 +197,7 @@ static mut GAME: Game = Game {
     shield: 0.0,
     ccd: 0.0,
     mcd: 0.0,
-    life_cd: 15.0,
+    life_pows: 0,
     trail_cd: 0.0,
     snow_cd: 0.0,
     spawn_left: 0,
@@ -331,11 +331,14 @@ fn radial(shots: &mut [Shot; NS], x: f32, y: f32, n: u32, phase: f32, speed: f32
     }
 }
 
-fn spawn_pow(pows: &mut [Pw; NP], rng: &mut u32, x: f32, y: f32) {
+fn spawn_pow(pows: &mut [Pw; NP], rng: &mut u32, x: f32, y: f32, campaign: u32, life_pows: &mut u8) {
     for p in pows.iter_mut() {
         if !p.alive {
             let r = rnd(rng);
-            let kind = if r < 0.45 {
+            let kind = if campaign == 1 && *life_pows < 5 && r < 0.20 {
+                *life_pows += 1;
+                3
+            } else if r < 0.45 {
                 0
             } else if r < 0.78 {
                 1
@@ -546,7 +549,12 @@ fn spawn_enemy(g: &mut Game) {
 
 fn reset_game(g: &mut Game, h: &mut [f32; 24]) {
     g.score = 0;
-    g.lives = 3;
+    // Vajra Nights: random 3–5 starting lives; day campaign always 3
+    g.lives = if g.campaign == 1 {
+        3 + (rnd(&mut g.rng) * 3.0) as i32
+    } else {
+        3
+    };
     g.sector = g.start_sector.min(NSECTORS - 1);
     g.wave = 1;
     g.clear_t = 0.0;
@@ -559,7 +567,7 @@ fn reset_game(g: &mut Game, h: &mut [f32; 24]) {
     g.shield = 0.0;
     g.ccd = 0.0;
     g.mcd = 0.0;
-    g.life_cd = 11.0 + rnd(&mut g.rng) * 9.0;
+    g.life_pows = 0;
     g.bullets = [ZB; NB];
     g.enemies = [ZE; NE];
     g.shots = [ZS; NS];
@@ -717,18 +725,6 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
         if g.mtimer > 0.0 {
             g.mtimer -= dt;
         }
-        // Vajra Nights: RUDRA earns a free life every 11–20 s (cap 5)
-        if g.campaign == 1 {
-            g.life_cd -= dt;
-            if g.life_cd <= 0.0 {
-                g.life_cd = 11.0 + rnd(&mut g.rng) * 9.0;
-                if g.lives < 5 {
-                    g.lives += 1;
-                    push_ev(h, EV_POW);
-                }
-            }
-        }
-
         // tricolor exhaust trail
         g.trail_cd -= dt;
         if g.trail_cd <= 0.0 {
@@ -1242,8 +1238,8 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
                         boom(&mut g.parts, &mut g.rng, e.x, e.y, if big { 34 } else { 14 }, big);
                         push_ev(h, if big { EV_BIGBOOM } else { EV_BOOM });
                         if e.kind == 3 {
-                            spawn_pow(&mut g.pows, &mut g.rng, e.x - 30.0, e.y);
-                            spawn_pow(&mut g.pows, &mut g.rng, e.x + 30.0, e.y);
+                            spawn_pow(&mut g.pows, &mut g.rng, e.x - 30.0, e.y, g.campaign, &mut g.life_pows);
+                            spawn_pow(&mut g.pows, &mut g.rng, e.x + 30.0, e.y, g.campaign, &mut g.life_pows);
                             // checkpoint secured: clear hostile fire, save resume
                             // point, advance west→east (or finish the campaign)
                             for s in g.shots.iter_mut() {
@@ -1260,7 +1256,7 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
                                 g.spawn_left = 0;
                             }
                         } else if rnd(&mut g.rng) < 0.14 {
-                            spawn_pow(&mut g.pows, &mut g.rng, e.x, e.y);
+                            spawn_pow(&mut g.pows, &mut g.rng, e.x, e.y, g.campaign, &mut g.life_pows);
                         }
                     }
                     break;
@@ -1326,6 +1322,7 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
                         g.mtimer = 12.0;
                         g.mcd = 0.0;
                     }
+                    3 => g.lives = (g.lives + 1).min(5),
                     _ => g.shield = 8.0,
                 }
                 g.score += 50;
