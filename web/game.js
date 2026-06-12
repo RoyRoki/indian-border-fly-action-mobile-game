@@ -1482,8 +1482,7 @@ function loop(now) {
     text('ALL 10 NIGHT OPS · BORDERS 11–20 SAFE', W / 2, 262, 14, '#ffffff');
     text('🌅 Sunrise over Walong. Jai Hind! 🇮🇳', W / 2, 288, 14, '#ffd23e');
     text('SCORE ' + score, W / 2, 326, 24, '#ffffff');
-    text('+2,00,000 NIGHT BONUS', W / 2, 356, 15, '#ffd23e');
-    text('💎 DIAMOND EARNED', W / 2, 386, 17, '#9fe8ff');
+    text('💎 DIAMOND EARNED', W / 2, 362, 17, '#9fe8ff');
     text('💎'.repeat(diamonds) + '◇'.repeat(5 - diamonds), W / 2, 416, 20, '#9fe8ff');
     if (submitState === 'ok') text('✓ SCORE ON GLOBAL LEADERBOARD', W / 2, 448, 12, '#ffd23e');
     if (blink) text('TAP FOR MENU', W / 2, 486, 18, '#ffd23e');
@@ -1511,7 +1510,7 @@ function loop(now) {
       ctx.restore();
       text('🔓 VAJRA NIGHTS UNLOCKED', 272, 414, 16, '#9fe8ff');
       text('Your AMCA “RUDRA” awaits —', 272, 438, 12, '#bfe9ff');
-      text('10 night ops · +2,00,000 + 💎 per win', 272, 456, 12, '#bfe9ff');
+      text('10 night ops · 💎 per win · free lives every ~15s', 272, 456, 12, '#bfe9ff');
     } else {
       text(`${5 - wins} more ★ to unlock VAJRA NIGHTS + the AMCA jet`, W / 2, 412, 12, '#9fc0e0');
     }

@@ -17,7 +17,7 @@ const MAXD: usize = 420; // max draw commands
 // Campaigns: India's border west→east, 10 checkpoint sectors each.
 //   0 = Border Campaign (day)
 //   1 = Vajra Nights (night ops; harder, new enemy types, weapon lvl 4,
-//       homing missiles, +200k victory bonus — JS awards the diamond)
+//       homing missiles, free life every 11-20s (cap 5) — JS awards the diamond)
 // Each sector = waves 1..=5; wave 5 is the sector boss. Killing it secures
 // the checkpoint (JS persists it) and advances to the next sector.
 const NSECTORS: u32 = 10;
@@ -131,6 +131,7 @@ struct Game {
     shield: f32,
     ccd: f32,
     mcd: f32,
+    life_cd: f32,
     trail_cd: f32,
     snow_cd: f32,
     // wave spawning
@@ -196,6 +197,7 @@ static mut GAME: Game = Game {
     shield: 0.0,
     ccd: 0.0,
     mcd: 0.0,
+    life_cd: 15.0,
     trail_cd: 0.0,
     snow_cd: 0.0,
     spawn_left: 0,
@@ -557,6 +559,7 @@ fn reset_game(g: &mut Game, h: &mut [f32; 24]) {
     g.shield = 0.0;
     g.ccd = 0.0;
     g.mcd = 0.0;
+    g.life_cd = 11.0 + rnd(&mut g.rng) * 9.0;
     g.bullets = [ZB; NB];
     g.enemies = [ZE; NE];
     g.shots = [ZS; NS];
@@ -713,6 +716,17 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
         }
         if g.mtimer > 0.0 {
             g.mtimer -= dt;
+        }
+        // Vajra Nights: RUDRA earns a free life every 11–20 s (cap 5)
+        if g.campaign == 1 {
+            g.life_cd -= dt;
+            if g.life_cd <= 0.0 {
+                g.life_cd = 11.0 + rnd(&mut g.rng) * 9.0;
+                if g.lives < 5 {
+                    g.lives += 1;
+                    push_ev(h, EV_POW);
+                }
+            }
         }
 
         // tricolor exhaust trail
@@ -1222,7 +1236,7 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
                             2 => (400, true),
                             4 => (350, false),
                             5 => (700, true),
-                            _ => (if g.campaign == 1 { 8000 } else { 5000 }, true),
+                            _ => (if g.campaign == 1 { 12000 } else { 7500 }, true),
                         };
                         g.score += sc;
                         boom(&mut g.parts, &mut g.rng, e.x, e.y, if big { 34 } else { 14 }, big);
@@ -1236,12 +1250,7 @@ pub extern "C" fn frame(dt_in: f32, tx: f32, ty: f32, pressed_in: u32) -> u32 {
                                 s.alive = false;
                             }
                             if g.sector + 1 >= NSECTORS {
-                                if g.campaign == 1 {
-                                    // Vajra Nights victory: 2,00,000-point bonus
-                                    // (JS banks the diamond alongside it)
-                                    g.score += 200_000;
-                                }
-                                g.mode = 3;
+                                    g.mode = 3;
                                 g.over_t = 0.0;
                             } else {
                                 g.sector += 1;
