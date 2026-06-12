@@ -27,7 +27,7 @@
     -webkit-user-select: none; user-select: none;
     font-family: "Avenir Next", "Segoe UI", sans-serif;
   }
-  canvas { display: block; width: 100vw; height: 100vh; }
+  canvas { display: block; width: 100vw; height: 100vh; height: 100dvh; }
   .overlay {
     position: fixed; inset: 0; display: none; z-index: 10;
     background: rgba(4,8,14,0.78); align-items: center; justify-content: center;
@@ -39,7 +39,7 @@
     padding: 20px; color: #e8eef6; -webkit-user-select: auto; user-select: auto;
   }
   .panel h2 { margin: 0 0 4px; font-size: 20px; letter-spacing: 1px; }
-  .panel .sub { color: #8fa3bb; font-size: 12px; margin-bottom: 14px; }
+  .panel .sub { color: #8fa3bb; font-size: 12px; margin-bottom: 4px; }
   .panel label { display: block; font-size: 12px; color: #9fb3c8; margin: 10px 0 4px; }
   .panel input {
     width: 100%; box-sizing: border-box; padding: 10px 12px; font-size: 16px;
@@ -51,7 +51,7 @@
     background: #ff9933; color: #1a2233; border: 0; border-radius: 10px; cursor: pointer;
   }
   .btn.ghost { background: transparent; color: #8fa3bb; font-weight: 600; font-size: 13px; margin-top: 8px; }
-  #lbrows { margin-top: 10px; }
+  #lbrows { margin-top: 2px; }
   .row { display: flex; gap: 8px; padding: 7px 4px; font-size: 14px; border-bottom: 1px solid #1a2740; align-items: baseline; }
   .row .rank { width: 26px; color: #8fa3bb; font-weight: 700; }
   .row .who { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

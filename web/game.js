@@ -84,7 +84,7 @@ function resize() {
   canvas.height = innerHeight * dpr;
   scale = Math.min(innerWidth / W, innerHeight / H);
   ox = (innerWidth - W * scale) / 2;
-  oy = (innerHeight - H * scale) / 2;
+  oy = 0;
   canvas._dpr = dpr;
 }
 addEventListener('resize', resize);
@@ -146,7 +146,7 @@ const nightUnlocked = () => wins >= 5 || forceNight;
 
 // ---------- mission select (menu) ----------
 const CARD_DAY = { x: 36, y: 252, w: W - 72, h: 104 };
-const CARD_NIGHT = { x: 36, y: 376, w: W - 72, h: 196 };
+const CARD_NIGHT = { x: 36, y: 376, w: W - 72, h: 104 };
 let lockedT = 0; // "5-star pilots only" flash when tapping the locked card
 const inRect = (p, r) => p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
 function startCampaign(c) {
@@ -249,11 +249,11 @@ lbbtn.onclick = async () => {
     const medals = ['🥇', '🥈', '🥉'];
     const makeRow = (t, rank) => {
       const me = myRank === rank;
-      const stars = t.wins > 0
-        ? ` <span class="stars" title="secured the whole border ×${Math.min(t.wins, 5)}">${'★'.repeat(Math.min(t.wins, 5))}</span>`
-        : '';
       const dia = t.dia > 0
         ? ` <span class="dia" title="Vajra Nights victories ×${Math.min(t.dia, 5)}">${'💎'.repeat(Math.min(t.dia, 5))}</span>`
+        : '';
+      const stars = t.wins > 0 && !t.dia
+        ? ` <span class="stars" title="secured the whole border ×${Math.min(t.wins, 5)}">${'★'.repeat(Math.min(t.wins, 5))}</span>`
         : '';
       return `<div class="row${me ? ' me' : ''}">
         <span class="rank">${medals[rank - 1] || rank}</span>
@@ -268,6 +268,7 @@ lbbtn.onclick = async () => {
   } catch { $('lbstatus').textContent = 'Could not load leaderboard.'; }
 };
 $('lbclose').onclick = () => lbOverlay.classList.remove('open');
+lbOverlay.addEventListener('click', e => { if (e.target === lbOverlay) lbOverlay.classList.remove('open'); });
 
 // ---------- audio (tiny synth) ----------
 let ac = null;
@@ -1400,47 +1401,61 @@ function loop(now) {
       rr(c.x, c.y, c.w, c.h, 16); ctx.stroke();
       ctx.shadowBlur = 0;
 
-      text('🌙 VAJRA NIGHTS', c.x + 18, c.y + 26, 18, '#bfe9ff', 'left');
-      text('OPERATION FIRST LIGHT · 22:00 → SUNRISE', c.x + 18, c.y + 48, 10, '#8fb0d8', 'left');
-      text('Borders 11–20 · phantom drones, night', c.x + 18, c.y + 74, 11, '#9fc0e0', 'left');
-      text('hunters, homing missiles, elite bosses', c.x + 18, c.y + 90, 11, '#9fc0e0', 'left');
-      text('WIN: +2,00,000 PTS + 💎 DIAMOND', c.x + 18, c.y + 114, 12, '#9fe8ff', 'left');
-      if (!open) { // dim the card, but let the new jet shine through below
+      text('🌙 VAJRA NIGHTS', c.x + 18, c.y + 24, 17, '#bfe9ff', 'left');
+      text('Borders 11–20 · night ops · elite bosses', c.x + 18, c.y + 45, 11, '#8fb0d8', 'left');
+      if (!open) {
         ctx.fillStyle = 'rgba(6,10,18,0.45)';
         rr(c.x, c.y, c.w, c.h, 16); ctx.fill();
       }
-      // the showcase: the AMCA RUDRA, the jet you unlock
       const bob = Math.sin(now / 600) * 4;
       ctx.save();
-      ctx.translate(c.x + c.w - 58, c.y + 86 + bob);
+      ctx.translate(c.x + c.w - 48, c.y + 50 + bob);
       ctx.shadowColor = 'rgba(90,220,255,0.95)';
       ctx.shadowBlur = open ? 20 : 14;
-      ctx.scale(1.15, 1.15);
+      ctx.scale(0.85, 0.85);
       ctx.drawImage(sprPlayerNight, -36, -36);
       ctx.restore();
-      text('NEW JET', c.x + c.w - 58, c.y + 134, 9, '#54c8ff');
-      text('AMCA “RUDRA”', c.x + c.w - 58, c.y + 148, 11, '#bfe9ff');
       if (open) {
         if (savedCp[1] > 0) {
           const cs = NIGHT_SECTORS[savedCp[1]];
-          text(`▶ CONTINUE — NIGHT OP ${savedCp[1] + 1} · ${cs.name}`, c.x + 18, c.y + 152, 12, '#7fe06a', 'left');
+          text(`▶ CONTINUE — NIGHT OP ${savedCp[1] + 1} · ${cs.name}`, c.x + 18, c.y + 68, 12, '#7fe06a', 'left');
           text('↺ RESTART', c.x + c.w - 18, c.y + c.h - 16, 11, '#8fa3bb', 'right');
         } else {
-          text('▶ TAP TO LAUNCH NIGHT OPS', c.x + 18, c.y + 152, 13, blink ? '#ffd23e' : '#e8b22e', 'left');
+          text('▶ TAP TO LAUNCH NIGHT OPS', c.x + 18, c.y + 68, 13, blink ? '#ffd23e' : '#e8b22e', 'left');
         }
-        text(`DIAMONDS ${diamonds}/5`, c.x + 18, c.y + c.h - 16, 10, '#9fe8ff', 'left');
+        text('WIN: 💎 DIAMOND', c.x + 18, c.y + c.h - 16, 10, '#9fe8ff', 'left');
       } else {
-        text(`🔒 LOCKED — ${'★'.repeat(wins)}${'☆'.repeat(5 - wins)}`, c.x + 18, c.y + 152, 14, '#ff9c5a', 'left');
-        text('Promote to ★★★★★ — win the Border Campaign 5×', c.x + 18, c.y + c.h - 20, 10.5, '#c8d4e0', 'left');
+        text('🔒 LOCKED', c.x + 18, c.y + 68, 13, '#ff9c5a', 'left');
+        text('Win Border Campaign 5× to unlock', c.x + 18, c.y + c.h - 16, 10, '#c8d4e0', 'left');
       }
       if (lockedT > 0 && Math.floor(now / 180) % 2) {
         text('⚠ 5-STAR PILOTS ONLY ⚠', W / 2, c.y - 10, 14, '#ff5f4f');
       }
     }
 
-    if (hiscore > 0) text('HI-SCORE ' + hiscore, W / 2, 602, 14, '#dce6f0');
-    text('Drag to fly · cannon auto-fires · boss = checkpoint', W / 2, 636, 12, '#9fb0c2');
-    text('W = wing guns · M = missiles · S = shield', W / 2, 656, 12, '#9fb0c2');
+    if (hiscore > 0) text('HI-SCORE ' + hiscore, W / 2, 508, 14, '#dce6f0');
+    text('Drag to fly · cannon auto-fires · boss = checkpoint', W / 2, 534, 12, '#9fb0c2');
+    {
+      const badges = [
+        { x: 152, label: 'W', sub: 'WING GUNS', color: '#ff9933' },
+        { x: 240, label: 'M', sub: 'MISSILES',  color: '#e84d4d' },
+        { x: 328, label: 'S', sub: 'SHIELD',    color: '#3da5ff' },
+      ];
+      const by = 572;
+      for (const b of badges) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(b.x, by, 18, 0, Math.PI * 2);
+        ctx.fillStyle = b.color + '28';
+        ctx.fill();
+        ctx.strokeStyle = b.color;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.restore();
+        text(b.label, b.x, by + 1, 15, b.color);
+        text(b.sub, b.x, by + 30, 9, '#8fa3bb', 'center', '600');
+      }
+    }
     text('a game by rokiroy.in', W / 2, H - 18, 12, '#8fa3bb');
   } else if (mode === 2) {
     // ---- mission failed ----
