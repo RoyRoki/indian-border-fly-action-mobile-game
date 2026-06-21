@@ -1376,7 +1376,12 @@ async function mpJoinChannel(code) {
 function mpUpdateLobby() {
   if (!mp.channel) return;
   const state = mp.channel.presenceState();
-  const players = Object.values(state).flat();
+  // presenceState maps key → presenceRef[]. Multiple refs per key = reconnects / multi-tab.
+  // Take the most recent ref per key, then deduplicate by pid to avoid ghost entries.
+  const seen = new Set();
+  const players = Object.values(state)
+    .map(refs => refs[refs.length - 1])
+    .filter(p => { if (!p?.pid || seen.has(p.pid)) return false; seen.add(p.pid); return true; });
   const myId = sbSession?.user?.id;
   const rows = players.map(p => {
     const me = p.pid === myId;
@@ -1705,18 +1710,12 @@ async function openFriendsOverlay() {
 async function frInvite(playerId, friendName) {
   if (!mp.code) return;
   try {
-    await new Promise((resolve, reject) => {
-      const ch = supabase.channel(`user:${playerId}`);
-      const t = setTimeout(() => { supabase.removeChannel(ch); reject(); }, 5000);
-      ch.subscribe(async (status) => {
-        if (status !== 'SUBSCRIBED') return;
-        clearTimeout(t);
-        try {
-          await ch.send({ type: 'broadcast', event: 'ROOM_INVITE',
-            payload: { fromName: profile?.name || 'PILOT', code: mp.code } });
-        } finally { supabase.removeChannel(ch); resolve(); }
-      });
+    const r = await fetch('/api/invite', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sbSession?.access_token}` },
+      body: JSON.stringify({ toPlayerId: playerId, fromName: profile?.name || 'PILOT', code: mp.code }),
     });
+    if (!r.ok) throw new Error(await r.text());
     showToast(`Invite sent to <strong>${esc(friendName)}</strong>!`, [], 2500);
   } catch { showToast('Could not reach friend', [], 2500); }
 }
