@@ -1,11 +1,12 @@
-// Leaderboard API backed by Vercel Blob.
-// Each score is one tiny blob whose PATHNAME encodes the entry:
-//   scores/<0000000score>.<sector>.<b64url name>.<b64url city>.w<wins>.d<dia>.<ts>
-// (older entries lack the w<wins> and/or d<dia> segments and read as 0;
-//  sectors 11–20 are Vajra Nights ops, dia = night-campaign victories)
-// So GET needs a single list() call — no per-entry fetches, and writes never
-// race each other because every entry is its own blob.
+// Leaderboard API — GET merges Supabase (authenticated) + Vercel Blob (legacy).
+// POST still writes to Blob for backward compatibility with old clients.
 import { list, put } from '@vercel/blob';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
 const enc = (s) => Buffer.from(String(s), 'utf8').toString('base64url');
 const dec = (s) => {
@@ -36,12 +37,8 @@ export async function POST(request) {
   const n = clean(body?.name, 'PILOT');
   const c = clean(body?.city, '—');
   const sec = Math.min(Math.max(Number(body?.sector) | 0, 0), 20);
-  // campaign completions → gold stars on the board, capped at 5
   const wins = Math.min(Math.max(Number(body?.wins) | 0, 0), 5);
-  // Vajra Nights victories → diamonds, capped at 5
   const dia = Math.min(Math.max(Number(body?.dia) | 0, 0), 5);
-  // unique trailing segment ourselves — addRandomSuffix would splice its
-  // suffix before the last dot and corrupt the encoded city segment
   const uniq = `${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
   const path = `scores/${String(sc).padStart(7, '0')}.${sec}.${enc(n)}.${enc(c)}.w${wins}.d${dia}.${uniq}`;
   try {
@@ -57,51 +54,113 @@ export async function GET(request) {
   const url = new URL(request.url);
   const qName = (url.searchParams.get('name') || '').toLowerCase().trim();
   const qCity = (url.searchParams.get('city') || '').toLowerCase().trim();
+  const qUid  = (url.searchParams.get('uid')  || '').trim();
 
-  let blobs;
+  // ---- Supabase: authenticated scores (best per player) ----
+  const supRows = [];
   try {
-    ({ blobs } = await list({ prefix: 'scores/', limit: 1000 }));
+    const { data } = await supabase
+      .from('scores')
+      .select('score, sector, player_id, players(name, city, wins, dia)')
+      .order('score', { ascending: false })
+      .limit(1000);
+
+    // Deduplicate by player_id (UUID) so name changes don't create duplicates.
+    // Scores are ordered highest-first so first occurrence = best score per player.
+    const seenUid = new Set();
+    for (const row of data || []) {
+      const p = row.players;
+      if (!p || seenUid.has(row.player_id)) continue;
+      seenUid.add(row.player_id);
+      const key = `${p.name.toLowerCase()}|${p.city.toLowerCase()}`;
+      supRows.push({
+        score: row.score, sector: row.sector,
+        name: p.name, city: p.city, wins: p.wins, dia: p.dia, key,
+        uid: row.player_id,
+      });
+    }
   } catch (err) {
-    console.error('leaderboard GET: blob list failed', err);
-    return Response.json({ error: 'storage unavailable' }, { status: 500 });
-  }
-  const rows = [];
-  const winsBy = new Map();
-  const diaBy = new Map();
-  for (const b of blobs) {
-    const parts = b.pathname.slice('scores/'.length).split('.');
-    if (parts.length < 5) continue;
-    const score = Number(parts[0]);
-    if (!Number.isFinite(score) || score <= 0) continue;
-    const wins = parts.length >= 6 && /^w\d$/.test(parts[4]) ? Math.min(Number(parts[4].slice(1)), 5) : 0;
-    const dia = parts.length >= 7 && /^d\d$/.test(parts[5]) ? Math.min(Number(parts[5].slice(1)), 5) : 0;
-    const key = `${dec(parts[2]).toLowerCase()}|${dec(parts[3]).toLowerCase()}`;
-    winsBy.set(key, Math.max(winsBy.get(key) || 0, wins));
-    diaBy.set(key, Math.max(diaBy.get(key) || 0, dia));
-    rows.push({ score, sector: Number(parts[1]) || 0, name: dec(parts[2]), city: dec(parts[3]), key });
-  }
-  rows.sort((a, b) => b.score - a.score);
-
-  // deduplicate — one entry per pilot (best score), full list
-  const seen = new Set();
-  const all = [];
-  for (const r of rows) {
-    if (seen.has(r.key)) continue;
-    seen.add(r.key);
-    all.push({ score: r.score, sector: r.sector, name: r.name, city: r.city, wins: winsBy.get(r.key) || 0, dia: diaBy.get(r.key) || 0, key: r.key });
+    console.error('leaderboard GET: supabase error', err);
   }
 
-  const totalPilots = all.length;
-  const top = all.slice(0, 10).map(({ key: _k, ...rest }) => rest);
+  // ---- Blob: legacy anonymous scores ----
+  const blobDeduped = [];
+  try {
+    const { blobs } = await list({ prefix: 'scores/', limit: 1000 });
+    const winsBy = new Map(), diaBy = new Map(), blobAll = [];
+    for (const b of blobs) {
+      const parts = b.pathname.slice('scores/'.length).split('.');
+      if (parts.length < 5) continue;
+      const score = Number(parts[0]);
+      if (!Number.isFinite(score) || score <= 0) continue;
+      const wins = parts.length >= 6 && /^w\d$/.test(parts[4]) ? Math.min(Number(parts[4].slice(1)), 5) : 0;
+      const dia  = parts.length >= 7 && /^d\d$/.test(parts[5]) ? Math.min(Number(parts[5].slice(1)), 5) : 0;
+      const key  = `${dec(parts[2]).toLowerCase()}|${dec(parts[3]).toLowerCase()}`;
+      winsBy.set(key, Math.max(winsBy.get(key) || 0, wins));
+      diaBy.set(key, Math.max(diaBy.get(key) || 0, dia));
+      blobAll.push({ score, sector: Number(parts[1]) || 0, name: dec(parts[2]), city: dec(parts[3]), key });
+    }
+    blobAll.sort((a, b) => b.score - a.score);
+    const seenBlob = new Set();
+    for (const r of blobAll) {
+      if (seenBlob.has(r.key)) continue;
+      seenBlob.add(r.key);
+      blobDeduped.push({ ...r, wins: winsBy.get(r.key) || 0, dia: diaBy.get(r.key) || 0 });
+    }
+  } catch (err) {
+    console.error('leaderboard GET: blob error', err);
+  }
+
+  // ---- Merge: each Supabase player stays separate (keyed by UUID, not name).
+  // Blob entries boost scores for Supabase players with matching name+city
+  // (migration: same person played anonymously before signing in).
+  // Blob entries with no matching Supabase player are kept as separate rows.
+  // Two Supabase players with the same name+city are never collapsed. ----
+  const merged = supRows.map(r => ({ ...r }));
+
+  // Index for blob→supabase score boosting: name|city → first matching sup row index.
+  // If multiple Supabase players share the same name+city we still boost the top scorer.
+  const supBoostMap = new Map();
+  for (let i = 0; i < merged.length; i++) {
+    if (!supBoostMap.has(merged[i].key)) supBoostMap.set(merged[i].key, i);
+  }
+  // Track which name+city keys are covered by Supabase (any number of players)
+  const supKeySet = new Set(merged.map(r => r.key));
+
+  for (const b of blobDeduped) {
+    if (supKeySet.has(b.key)) {
+      // Boost the best-scoring Supabase player with this name+city from their old blob score
+      const i = supBoostMap.get(b.key);
+      if (b.score > merged[i].score) { merged[i].score = b.score; merged[i].sector = b.sector; }
+      merged[i].wins = Math.max(merged[i].wins, b.wins);
+      merged[i].dia  = Math.max(merged[i].dia,  b.dia);
+    } else {
+      merged.push(b);
+    }
+  }
+  merged.sort((a, b) => b.score - a.score);
+
+  // Count all registered players (not just those with scores)
+  let totalPilots = merged.length;
+  try {
+    const { count } = await supabase
+      .from('players')
+      .select('id', { count: 'exact', head: true });
+    if (count && count > totalPilots) totalPilots = count;
+  } catch { /* fall back to score count */ }
+  const top = merged.slice(0, 10).map(({ key: _k, uid: _u, ...rest }) => rest);
 
   let myRank = null;
   let myEntry = null;
-  if (qName) {
-    const idx = all.findIndex(e => e.key === `${qName}|${qCity}`);
+  if (qUid || qName) {
+    // Prefer UUID lookup (unique); fall back to name+city for blob-only players
+    const idx = qUid
+      ? merged.findIndex(e => e.uid === qUid)
+      : merged.findIndex(e => e.key === `${qName}|${qCity}`);
     if (idx !== -1) {
       myRank = idx + 1;
       if (idx >= 10) {
-        const { key: _k, ...rest } = all[idx];
+        const { key: _k, uid: _u, ...rest } = merged[idx];
         myEntry = rest;
       }
     }

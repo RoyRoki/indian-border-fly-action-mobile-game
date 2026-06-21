@@ -1,10 +1,23 @@
 // BORDERHAWK: Himalayan Skies — JS glue: canvas renderer, input, audio.
 // All game logic lives in Rust/WASM; this file just draws what the engine says.
 
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+const supabase = createClient(
+  'https://mzmomzwvsynpaenxduhe.supabase.co',
+  'sb_publishable_fgdp8mk1Xi7nzQJaE8Etpw_BSAOUw7W',
+  { auth: { flowType: 'pkce' } }
+)
+
 const W = 480, H = 800;
 
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
+
+// Ghost overlay — rendered above the game canvas, below HUD buttons (z-index 3)
+const ghostCanvas = document.createElement('canvas');
+ghostCanvas.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:3;';
+document.body.appendChild(ghostCanvas);
+const gCtx = ghostCanvas.getContext('2d');
 
 // ---------- wasm ----------
 async function loadWasm() {
@@ -82,6 +95,8 @@ function resize() {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   canvas.width = innerWidth * dpr;
   canvas.height = innerHeight * dpr;
+  ghostCanvas.width = innerWidth * dpr;
+  ghostCanvas.height = innerHeight * dpr;
   scale = Math.min(innerWidth / W, innerHeight / H);
   ox = (innerWidth - W * scale) / 2;
   oy = 0;
@@ -103,6 +118,7 @@ canvas.addEventListener('pointerdown', e => {
   const p = toGame(e);
   unlockAudio();
   e.preventDefault();
+  if (mp.phase === 'countdown') return; // no input during countdown
   // the menu is a mission-select screen — taps pick a card, not the plane
   if (lastMode === 0) { menuTap(p, e.timeStamp); return; }
   pointer.x = p.x; pointer.y = p.y - 90; pointer.down = true;
@@ -134,7 +150,6 @@ addEventListener('keyup', e => {
 });
 
 // ---------- leaderboard & pilot profile ----------
-const profKey = 'borderhawk_profile';
 // campaign completions → gold stars (max 5); old saves had only a completed flag
 const winsKey = 'borderhawk_wins';
 let wins = Math.min(5, +(localStorage.getItem(winsKey) || 0) || (localStorage.getItem('borderhawk_completed') ? 1 : 0));
@@ -145,8 +160,9 @@ let diamonds = Math.min(5, +(localStorage.getItem(diaKey) || 0));
 const nightUnlocked = () => wins >= 5 || forceNight;
 
 // ---------- mission select (menu) ----------
-const CARD_DAY = { x: 36, y: 252, w: W - 72, h: 104 };
+const CARD_DAY   = { x: 36, y: 252, w: W - 72, h: 104 };
 const CARD_NIGHT = { x: 36, y: 376, w: W - 72, h: 104 };
+const CARD_MP    = { x: 36, y: 500, w: W - 72, h: 68  };
 let lockedT = 0; // "5-star pilots only" flash when tapping the locked card
 const inRect = (p, r) => p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
 function startCampaign(c) {
@@ -178,53 +194,125 @@ function menuTap(p) {
       lockedT = 2.2;
       tone(150, 0.3, 'sawtooth', 0.08, -70); // denied buzz
     }
+    return;
+  }
+  if (inRect(p, CARD_MP)) {
+    if (!sbSession || !profile?.name) {
+      // Need to be signed in with a call sign
+      $('profileStep1').style.display = '';
+      $('profileStep2').style.display = 'none';
+      profileOverlay.classList.add('open');
+      return;
+    }
+    mpOpenMenu();
   }
 }
-let profile = null;
-try { profile = JSON.parse(localStorage.getItem(profKey) || 'null'); } catch { /* corrupt */ }
+let profile = null;      // { name, city } — loaded from Supabase after auth
+let sbSession = null;    // Supabase auth session
 let pendingScore = null; // {score, sector} awaiting profile entry
 let submitState = '';    // '', 'sending', 'ok', 'fail'
+let paused = false;
+
+// ---------- multiplayer state ----------
+const mp = {
+  phase: null,       // null | 'lobby' | 'countdown' | 'playing' | 'results'
+  roomId: null, code: null, matchId: null,
+  isHost: false,
+  campaign: 0, sector: 0, seed: 0,
+  prevCampaign: 0,   // campaign active before the MP match started (restored after)
+  myReady: false,
+  others: {},        // pid → {x,y,hp,score,wave,alive,name}
+  myKills: 0, myWaves: 0,
+  startTime: 0,
+  channel: null,
+  _lastBcast: 0,
+};
 const $ = (id) => document.getElementById(id);
-const profileOverlay = $('profileOverlay'), lbOverlay = $('lbOverlay'), lbbtn = $('lbbtn');
-const uiOpen = () => profileOverlay.classList.contains('open') || lbOverlay.classList.contains('open');
+const profileOverlay = $('profileOverlay'), lbOverlay = $('lbOverlay'), lbbtn = $('lbbtn'), signinbtn = $('signinbtn');
+const pausebtn = $('pausebtn'), pausePanel = $('pausePanel');
+const profileModal = $('profileModal');
+const uiOpen = () =>
+  profileOverlay.classList.contains('open') ||
+  lbOverlay.classList.contains('open') ||
+  profileModal.classList.contains('open') ||
+  $('mpOverlay').classList.contains('open') ||
+  $('mpResults').classList.contains('open') ||
+  $('friendsOverlay').classList.contains('open') ||
+  mp.phase === 'countdown' ||
+  paused;
 const esc = (x) => String(x).replace(/[&<>"']/g, ch => `&#${ch.charCodeAt(0)};`);
 
 async function postScore(s) {
   submitState = 'sending';
   try {
-    const r = await fetch('/api/leaderboard', {
+    if (!sbSession) { submitState = ''; return; }
+    const r = await fetch('/api/scores', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${sbSession.access_token}`,
+      },
       // night sectors post as 11–20 so the board shows how deep the op went
       body: JSON.stringify({
-        name: profile.name,
-        city: profile.city,
         score: s.score,
         sector: s.sector + (s.night ? 10 : 0),
-        wins,
-        dia: diamonds,
       }),
     });
-    submitState = r.ok ? 'ok' : 'fail';
-  } catch { submitState = 'fail'; }
+    submitState = r.ok ? 'ok' : '';
+  } catch { submitState = ''; }
 }
 function maybeSubmit(score, sector) {
   if (score <= 0) return;
   pendingScore = { score, sector, night: campaign === 1 };
-  if (profile?.name) postScore(pendingScore);
-  else {
-    $('pname').value = profile?.name || '';
-    $('pcity').value = profile?.city || '';
+  if (!sbSession) {
+    $('profileStep1').style.display = '';
+    $('profileStep2').style.display = 'none';
     profileOverlay.classList.add('open');
-    setTimeout(() => $('pname').focus(), 50);
+  } else if (profile?.name) {
+    postScore(pendingScore);
+  } else {
+    // Session exists but profile not cached yet — retry from Supabase (handles cross-device sign-in)
+    loadProfile().then(() => {
+      if (profile?.name) {
+        postScore(pendingScore);
+      } else {
+        let lsProf = null;
+        try { lsProf = JSON.parse(localStorage.getItem('borderhawk_profile') || 'null'); } catch {}
+        $('profileStep1').style.display = 'none';
+        $('profileStep2').style.display = '';
+        $('pname').value = lsProf?.name || '';
+        $('pcity').value = lsProf?.city || '';
+        profileOverlay.classList.add('open');
+        setTimeout(() => $('pname').focus(), 50);
+      }
+    });
   }
 }
-$('psave').onclick = () => {
+async function signInWithGoogle() {
+  // Write profile snapshot to localStorage BEFORE redirect so it survives cross-context navigation
+  // (iOS PWA opens OAuth in Safari, which has a separate sessionStorage but may share localStorage)
+  try {
+    const lsProf = JSON.parse(localStorage.getItem('borderhawk_profile') || 'null');
+    if (lsProf?.name) {
+      localStorage.setItem('bh_migrate', JSON.stringify({
+        name: lsProf.name, city: lsProf.city || '—', wins, dia: diamonds,
+      }));
+    }
+  } catch {}
+  if (pendingScore) sessionStorage.setItem('bh_pending', JSON.stringify(pendingScore));
+  await supabase.auth.signInWithOAuth({
+    provider: 'google',
+    options: { redirectTo: window.location.origin },
+  });
+}
+$('googleBtn').onclick = () => signInWithGoogle();
+$('psave').onclick = async () => {
   const name = $('pname').value.trim().slice(0, 14);
   if (!name) { $('pname').focus(); return; }
   profile = { name, city: $('pcity').value.trim().slice(0, 14) };
-  localStorage.setItem(profKey, JSON.stringify(profile));
   profileOverlay.classList.remove('open');
+  updateSigninBtn();
+  await saveProfileToSupabase();
   if (pendingScore) postScore(pendingScore);
 };
 $('pskip').onclick = () => {
@@ -232,15 +320,259 @@ $('pskip').onclick = () => {
   pendingScore = null;
   submitState = '';
 };
+$('pmClose').onclick = () => profileModal.classList.remove('open');
+$('pmSave').onclick = async () => {
+  const name = $('editName').value.trim().slice(0, 14);
+  if (!name) { $('editName').focus(); return; }
+  profile = { name, city: $('editCity').value.trim().slice(0, 14) || '—' };
+  const btn = $('pmSave'), st = $('pmStatus');
+  btn.textContent = 'SAVING…'; btn.disabled = true;
+  st.style.display = 'none';
+  const ok = await saveProfileToSupabase();
+  btn.disabled = false; btn.textContent = 'SAVE CHANGES';
+  if (ok) {
+    updateSigninBtn();
+    profileModal.classList.remove('open');
+  } else {
+    st.style.cssText = 'display:block;font-size:13px;text-align:center;margin-top:10px;padding:8px 0;color:#ff5f4f';
+    st.textContent = 'Save failed — check connection and try again';
+  }
+};
+$('pmLogout').onclick = async () => {
+  profileModal.classList.remove('open');
+  await saveProfileToSupabase(); // persist wins/diamonds/checkpoints before clearing session
+  await supabase.auth.signOut();
+  // handleSession(null) fires via onAuthStateChange and resets all local state
+};
+pausebtn.onclick = () => {
+  paused = true;
+  pausePanel.classList.add('open');
+};
+$('resumeBtn').onclick = () => {
+  paused = false;
+  pausePanel.classList.remove('open');
+};
+$('menuBtn').onclick = () => {
+  paused = false;
+  pausePanel.classList.remove('open');
+  submitState = '';
+  pendingScore = null;
+  wasm.init((Math.random() * 0xffffffff) >>> 0);
+  wasm.set_campaign(campaign);
+  wasm.set_checkpoint(savedCp[campaign]);
+};
+
+// ---- Supabase auth bootstrap ----
+async function openProfileModal() {
+  $('editName').value = profile?.name || '';
+  $('editCity').value = profile?.city || '';
+  $('pmEmail').textContent = sbSession?.user?.email || '';
+  $('pmStatus').style.display = 'none';
+  $('pmStats').style.display = 'none';
+  profileModal.classList.add('open');
+  setTimeout(() => $('editName').focus(), 50);
+
+  // Load stats async (email + best score from Supabase)
+  try {
+    const userId = sbSession?.user?.id;
+    const [userRes, scoreRes] = await Promise.all([
+      supabase.auth.getUser(),
+      userId ? supabase.from('scores').select('score').eq('player_id', userId).order('score', { ascending: false }).limit(1) : Promise.resolve({ data: [] }),
+    ]);
+    if (userRes.data?.user?.email) $('pmEmail').textContent = userRes.data.user.email;
+    const bestScore = scoreRes.data?.[0]?.score || 0;
+    const statsEl = $('pmStats');
+    const winsStr  = wins     > 0 ? '★'.repeat(wins)     : '—';
+    const diaStr   = diamonds > 0 ? '💎'.repeat(diamonds) : '—';
+    statsEl.innerHTML =
+      `<div style="display:flex;justify-content:space-between"><span style="color:#8fa3bb">BEST SCORE</span><span style="color:#ffd23e;font-weight:700">${bestScore > 0 ? bestScore.toLocaleString() : '—'}</span></div>` +
+      `<div style="display:flex;justify-content:space-between"><span style="color:#8fa3bb">BORDER WINS</span><span style="color:#ffd23e;letter-spacing:2px">${winsStr}</span></div>` +
+      `<div style="display:flex;justify-content:space-between"><span style="color:#8fa3bb">VAJRA NIGHTS</span><span>${diaStr}</span></div>`;
+    statsEl.style.display = 'block';
+  } catch {}
+}
+function updateSigninBtn() {
+  if (profile?.name) {
+    $('signinlabel').textContent = profile.name.slice(0, 12);
+    signinbtn.style.cursor = 'pointer';
+    signinbtn.onclick = openProfileModal;
+  } else if (sbSession) {
+    $('signinlabel').textContent = 'Set call sign';
+    signinbtn.style.cursor = 'pointer';
+    signinbtn.onclick = async () => {
+      // Retry loading from Supabase first — handles existing accounts where initial load failed
+      await loadProfile();
+      if (profile?.name) { updateSigninBtn(); return; }
+      // Truly new user — show call sign form, pre-fill from localStorage if available
+      let lsProf = null;
+      try { lsProf = JSON.parse(localStorage.getItem('borderhawk_profile') || 'null'); } catch {}
+      $('profileStep1').style.display = 'none';
+      $('profileStep2').style.display = '';
+      $('pname').value = lsProf?.name || '';
+      $('pcity').value = lsProf?.city || '';
+      profileOverlay.classList.add('open');
+      setTimeout(() => $('pname').focus(), 50);
+    };
+  } else {
+    $('signinlabel').textContent = 'Sign in';
+    signinbtn.style.cursor = 'pointer';
+    signinbtn.onclick = () => signInWithGoogle();
+  }
+}
+
+async function saveProfileToSupabase() {
+  if (!sbSession?.access_token || !profile?.name) return false;
+  try {
+    const r = await fetch('/api/profile', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${sbSession.access_token}`,
+      },
+      body: JSON.stringify({
+        name: profile.name,
+        city: profile.city || '—',
+        wins,
+        dia: diamonds,
+        checkpoint_day: savedCp[0],
+        checkpoint_night: savedCp[1],
+      }),
+    });
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
+async function loadProfile() {
+  // Use JWT user id from session first (fast, no extra round-trip).
+  // Fall back to getUser() only if session.user is unpopulated (PKCE edge case).
+  let userId = sbSession?.user?.id;
+  if (!userId) {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      userId = user?.id;
+    } catch {}
+  }
+  if (!userId) return;
+
+  try {
+    const { data } = await supabase
+      .from('players')
+      .select('name, city, wins, dia, checkpoint_day, checkpoint_night')
+      .eq('id', userId)
+      .maybeSingle();
+    if (data?.name) {
+      profile = { name: data.name, city: data.city };
+      wins     = Math.min(5, Math.max(wins, data.wins || 0));
+      diamonds = Math.min(5, Math.max(diamonds, data.dia  || 0));
+      const cpDay = data.checkpoint_day || 0;
+      const cpNight = data.checkpoint_night || 0;
+      if (cpDay > savedCp[0]) { savedCp[0] = cpDay; localStorage.setItem(cpKeys[0], String(cpDay)); }
+      if (cpNight > savedCp[1]) { savedCp[1] = cpNight; localStorage.setItem(cpKeys[1], String(cpNight)); }
+      wasm.set_checkpoint(savedCp[campaign]);
+      return;
+    }
+  } catch { /* network/db error — fall through to local migration */ }
+
+  // No profile in Supabase yet — migrate from localStorage.
+  let migData = null;
+  try { migData = JSON.parse(localStorage.getItem('bh_migrate') || 'null'); } catch {}
+  if (!migData?.name) {
+    try {
+      const lsProf = JSON.parse(localStorage.getItem('borderhawk_profile') || 'null');
+      if (lsProf?.name) migData = { name: lsProf.name, city: lsProf.city || '—', wins, dia: diamonds };
+    } catch {}
+  }
+  if (migData?.name) {
+    localStorage.removeItem('bh_migrate');
+    profile = { name: migData.name, city: migData.city };
+    wins     = Math.min(5, Math.max(wins, migData.wins || 0));
+    diamonds = Math.min(5, Math.max(diamonds, migData.dia  || 0));
+    await saveProfileToSupabase();
+  }
+}
+
+async function handleSession(session) {
+  sbSession = session;
+  updateSigninBtn();
+  if (session) {
+    await loadProfile();
+    updateSigninBtn();
+    // Subscribe to personal notifications and pre-load friends
+    if (session.user?.id) {
+      subscribeNotifChannel(session.user.id);
+      loadFriends();
+    }
+    // Handle pending score (saved before OAuth redirect)
+    const saved = sessionStorage.getItem('bh_pending');
+    if (saved) {
+      sessionStorage.removeItem('bh_pending');
+      try {
+        const p = JSON.parse(saved);
+        if (p?.score > 0) {
+          pendingScore = p;
+          if (!profile?.name) {
+            let lsProf2 = null;
+            try { lsProf2 = JSON.parse(localStorage.getItem('borderhawk_profile') || 'null'); } catch {}
+            $('profileStep1').style.display = 'none';
+            $('profileStep2').style.display = '';
+            $('pname').value = lsProf2?.name || '';
+            $('pcity').value = lsProf2?.city || '';
+            profileOverlay.classList.add('open');
+            setTimeout(() => $('pname').focus(), 50);
+          } else {
+            postScore(p);
+          }
+        }
+      } catch {}
+    }
+    // Auto-open name/city form for signed-in users with no profile yet
+    if (!profile?.name && !profileOverlay.classList.contains('open')) {
+      let lsProf3 = null;
+      try { lsProf3 = JSON.parse(localStorage.getItem('borderhawk_profile') || 'null'); } catch {}
+      $('profileStep1').style.display = 'none';
+      $('profileStep2').style.display = '';
+      $('pname').value = lsProf3?.name || '';
+      $('pcity').value = lsProf3?.city || '';
+      profileOverlay.classList.add('open');
+      setTimeout(() => $('pname').focus(), 50);
+    }
+  } else {
+    // Signed out — reset all local game state so levels/progress reflect empty account
+    profile = null;
+    wins = 0;
+    diamonds = 0;
+    savedCp[0] = 0;
+    savedCp[1] = 0;
+    localStorage.removeItem(cpKeys[0]);
+    localStorage.removeItem(cpKeys[1]);
+    localStorage.removeItem(winsKey);
+    localStorage.removeItem(diaKey);
+    wasm.set_checkpoint(0);
+    updateSigninBtn();
+    // Tear down notification subscription and clear friend state
+    if (fr.notifChannel) { supabase.removeChannel(fr.notifChannel); fr.notifChannel = null; }
+    fr.friends = []; fr.incoming = []; fr.outgoing = []; fr.loaded = false;
+  }
+}
+
+supabase.auth.onAuthStateChange((_ev, session) => { handleSession(session); });
+
+// Safety net: if PKCE exchange completed during WASM load and INITIAL_SESSION
+// fired before onAuthStateChange was registered, getSession() recovers it.
+supabase.auth.getSession().then(({ data: { session } }) => {
+  if (session && !sbSession) handleSession(session);
+});
 lbbtn.onclick = async () => {
   lbOverlay.classList.add('open');
   $('lbstatus').textContent = 'loading…';
   $('lbrows').innerHTML = '';
   $('lbpilotcount').textContent = '';
   try {
-    const qs = profile?.name
-      ? `?name=${encodeURIComponent(profile.name)}&city=${encodeURIComponent(profile.city || '')}`
-      : '';
+    const uid = sbSession?.user?.id;
+    const qs = uid
+      ? `?uid=${encodeURIComponent(uid)}&name=${encodeURIComponent(profile?.name || '')}&city=${encodeURIComponent(profile?.city || '')}`
+      : (profile?.name ? `?name=${encodeURIComponent(profile.name)}&city=${encodeURIComponent(profile.city || '')}` : '');
     const r = await fetch('/api/leaderboard' + qs);
     const { top, myRank, myEntry, totalPilots } = await r.json();
     if (!top?.length) { $('lbstatus').textContent = 'No scores yet — be the first!'; return; }
@@ -1004,10 +1336,534 @@ function tricolorBar(x, y, w, h) {
 // ---------- particle colors ----------
 const TRI = ['#ff9933', '#f2f2f2', '#138808'];
 
+// ========== MULTIPLAYER ==========
+
+function mpOpenMenu() {
+  $('mpStep1').style.display = '';
+  $('mpJoinStep').style.display = 'none';
+  $('mpLobby').style.display = 'none';
+  $('mpOverlay').classList.add('open');
+}
+
+async function mpJoinChannel(code) {
+  if (mp.channel) { await supabase.removeChannel(mp.channel); mp.channel = null; }
+  mp.channel = supabase.channel(`mp:room:${code}`, {
+    config: { broadcast: { self: false }, presence: { key: sbSession?.user?.id || 'anon' } },
+  });
+  mp.channel
+    .on('presence', { event: 'sync' }, () => mpUpdateLobby())
+    .on('presence', { event: 'join' }, () => mpUpdateLobby())
+    .on('presence', { event: 'leave' }, () => mpUpdateLobby())
+    .on('broadcast', { event: 'MATCH_START' }, ({ payload }) => mpStartMatch(payload))
+    .on('broadcast', { event: 'PLAYER_STATE' }, ({ payload }) => {
+      const myId = sbSession?.user?.id;
+      if (mp.phase === 'playing' && payload.pid && payload.pid !== myId) {
+        mp.others[payload.pid] = payload;
+      }
+    })
+    .subscribe(async (status) => {
+      if (status === 'SUBSCRIBED') {
+        await mp.channel.track({
+          pid: sbSession?.user?.id,
+          name: profile?.name || 'PILOT',
+          city: profile?.city || '—',
+          ready: false,
+        });
+      }
+    });
+}
+
+function mpUpdateLobby() {
+  if (!mp.channel) return;
+  const state = mp.channel.presenceState();
+  const players = Object.values(state).flat();
+  const myId = sbSession?.user?.id;
+  const rows = players.map(p => {
+    const me = p.pid === myId;
+    const host = mp.isHost && me;
+    return `<div class="row">
+      <span class="who">${esc(p.name || 'PILOT')} <small>· ${esc(p.city || '—')}${host ? ' · HOST' : ''}</small></span>
+      <span class="pts" style="color:${p.ready ? '#7fe06a' : '#ff9c5a'}">${p.ready ? 'READY' : 'WAITING'}</span>
+    </div>`;
+  }).join('');
+  $('mpPlayerList').innerHTML = rows || `<div style="text-align:center;color:#8fa3bb;font-size:12px;padding:8px 0">
+    Share code <strong style="color:#ffd23e;letter-spacing:4px">${mp.code}</strong> — waiting for pilots…</div>`;
+
+  const ready = players.filter(p => p.ready).length;
+  const allReady = players.length >= 2 && ready === players.length;
+  const myP = players.find(p => p.pid === myId);
+  $('mpReadyBtn').textContent = myP?.ready ? 'CANCEL READY' : 'READY';
+  $('mpReadyBtn').style.background = myP?.ready ? '#138808' : '#ff9933';
+  $('mpStartBtn').style.display = (mp.isHost && allReady) ? '' : 'none';
+  $('mpLobbyStatus').textContent = `${players.length}/4 pilots · ${ready} ready`;
+}
+
+function mpStartMatch({ levelId, campaign: c, sector: s, seed, matchId }) {
+  mp.campaign = c;
+  mp.sector   = s;
+  mp.seed     = seed;
+  mp.matchId  = matchId;
+  mp.phase    = 'countdown';
+  mp.others   = {};
+  mp.myKills  = 0;
+  mp.myWaves  = 0;
+  mp.prevCampaign = campaign;
+
+  // Re-init WASM with shared seed so all clients run the same enemy patterns
+  wasm.init(seed >>> 0);
+  campaign = c;
+  wasm.set_campaign(c);
+  wasm.set_checkpoint(s);
+
+  $('mpOverlay').classList.remove('open');
+  $('mpResults').classList.remove('open');
+
+  const SEC = c === 1 ? NIGHT_SECTORS : SECTORS;
+  const secName = (SEC[s] || {}).name || `SECTOR ${s + 1}`;
+  $('mpCountSub').textContent = `${c === 1 ? '🌙 NIGHT OP ' : '⚔ SECTOR '}${s + 1} · ${secName}`;
+  $('mpCountNum').textContent = '3';
+  $('mpCountPlayers').textContent = '';
+  $('mpCountdown').style.display = 'flex';
+
+  let cd = 3;
+  const tick = () => {
+    cd--;
+    if (cd > 0) {
+      $('mpCountNum').textContent = String(cd);
+      setTimeout(tick, 1000);
+    } else {
+      $('mpCountNum').textContent = 'GO!';
+      setTimeout(() => {
+        $('mpCountdown').style.display = 'none';
+        mp.phase = 'playing';
+        mp.startTime = Date.now();
+        mp._lastBcast = 0;
+        wasm.start_game();
+        submitState = '';
+        pendingScore = null;
+      }, 700);
+    }
+  };
+  setTimeout(tick, 1000);
+}
+
+async function mpEndMatch(finalScore, survived) {
+  mp.phase = 'results';
+
+  // Broadcast final state so ghosts freeze in place
+  if (mp.channel) {
+    mp.channel.send({
+      type: 'broadcast', event: 'PLAYER_STATE',
+      payload: {
+        pid: sbSession?.user?.id, name: profile?.name || 'PILOT',
+        x: pointer.x, y: pointer.y,
+        hp: survived ? 1 : 0, score: finalScore, wave: mp.myWaves, alive: false,
+      },
+    });
+  }
+
+  $('mpResults').classList.add('open');
+  $('mpResultRows').innerHTML = '<div style="text-align:center;color:#8fa3bb;padding:16px">Submitting results…</div>';
+
+  try {
+    const r = await fetch('/api/match', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sbSession?.access_token}` },
+      body: JSON.stringify({
+        matchId: mp.matchId,
+        score: finalScore,
+        kills: mp.myKills,
+        wavesCleared: mp.myWaves,
+        survived,
+        playTimeSec: Math.floor((Date.now() - mp.startTime) / 1000),
+      }),
+    });
+    const { results } = await r.json();
+    mpRenderResults(results);
+  } catch {
+    $('mpResultRows').innerHTML = '<div style="text-align:center;color:#ff5f4f;padding:16px">Failed to submit results</div>';
+  }
+}
+
+function mpRenderResults(results) {
+  const medals = ['🥇', '🥈', '🥉'];
+  const myId = sbSession?.user?.id;
+  const rows = (results || []).map((r, i) => {
+    const me = r.player_id === myId;
+    const rk = r.rank || (i + 1);
+    return `<div class="row${me ? ' me' : ''}">
+      <span class="rank">${medals[rk - 1] || rk}</span>
+      <span class="who">${esc(r.players?.name || 'PILOT')} <small>· ${esc(r.players?.city || '—')}</small></span>
+      <span class="pts">${(r.score || 0).toLocaleString()}</span>
+    </div>
+    <div style="font-size:11px;color:#8fa3bb;padding:1px 0 6px 34px">${r.kills || 0} kills · Wave ${r.waves_cleared || 0}/5${r.survived ? ' · Survived ✓' : ''}</div>`;
+  });
+  $('mpResultRows').innerHTML = rows.join('') || '<div style="text-align:center;color:#8fa3bb;padding:16px">No results yet…</div>';
+}
+
+async function mpLeave() {
+  $('mpOverlay').classList.remove('open');
+  $('mpCountdown').style.display = 'none';
+  if (mp.channel) { await supabase.removeChannel(mp.channel); mp.channel = null; }
+  mp.phase = null; mp.roomId = null; mp.code = null; mp.isHost = false; mp.myReady = false;
+  mp.others = {};
+  // Restore pre-MP campaign state
+  campaign = mp.prevCampaign;
+  wasm.set_campaign(campaign);
+  wasm.set_checkpoint(savedCp[campaign]);
+  wasm.init((Math.random() * 0xffffffff) >>> 0);
+}
+
+// ── MP button handlers ──
+$('mpCreateBtn').onclick = async () => {
+  $('mpCreateBtn').disabled = true;
+  try {
+    const r = await fetch('/api/rooms?action=create', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${sbSession.access_token}`, 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    const d = await r.json();
+    if (!d.ok) { alert(d.error || 'Failed to create room'); return; }
+    mp.roomId = d.roomId; mp.code = d.code; mp.isHost = true; mp.myReady = false;
+    await mpJoinChannel(d.code);
+    $('mpStep1').style.display = 'none';
+    $('mpLobby').style.display = '';
+    $('mpRoomCode').textContent = d.code;
+    mpUpdateLobby();
+  } finally { $('mpCreateBtn').disabled = false; }
+};
+
+$('mpJoinBtn').onclick = () => {
+  $('mpStep1').style.display = 'none';
+  $('mpJoinStep').style.display = '';
+  $('mpCodeInput').value = '';
+  $('mpCodeInput').style.borderColor = '';
+  setTimeout(() => $('mpCodeInput').focus(), 50);
+};
+
+$('mpJoinBackBtn').onclick = () => {
+  $('mpJoinStep').style.display = 'none';
+  $('mpStep1').style.display = '';
+};
+
+$('mpCodeInput').addEventListener('input', e => {
+  e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  e.target.style.borderColor = '';
+});
+
+$('mpJoinConfirmBtn').onclick = async () => {
+  const code = $('mpCodeInput').value.toUpperCase().trim();
+  if (code.length !== 4) { $('mpCodeInput').style.borderColor = '#ff5f4f'; return; }
+  $('mpJoinConfirmBtn').disabled = true;
+  try {
+    const r = await fetch('/api/rooms?action=join', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sbSession.access_token}` },
+      body: JSON.stringify({ code }),
+    });
+    const d = await r.json();
+    if (!d.ok) {
+      $('mpCodeInput').style.borderColor = '#ff5f4f';
+      const msg = { 'room not found': 'Invalid code', 'room full': 'Room is full', 'match in progress': 'Match already started' };
+      $('mpLobbyStatus').textContent = '';
+      alert(msg[d.error] || d.error || 'Could not join room');
+      return;
+    }
+    mp.roomId = d.roomId; mp.code = code; mp.isHost = false; mp.myReady = false;
+    await mpJoinChannel(code);
+    $('mpJoinStep').style.display = 'none';
+    $('mpLobby').style.display = '';
+    $('mpRoomCode').textContent = code;
+    mpUpdateLobby();
+  } finally { $('mpJoinConfirmBtn').disabled = false; }
+};
+
+$('mpReadyBtn').onclick = async () => {
+  mp.myReady = !mp.myReady;
+  // Update DB then presence
+  await fetch('/api/rooms?action=ready', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sbSession?.access_token}` },
+    body: JSON.stringify({ roomId: mp.roomId, ready: mp.myReady }),
+  });
+  if (mp.channel) {
+    await mp.channel.track({
+      pid: sbSession?.user?.id,
+      name: profile?.name || 'PILOT',
+      city: profile?.city || '—',
+      ready: mp.myReady,
+    });
+  }
+};
+
+$('mpStartBtn').onclick = async () => {
+  $('mpStartBtn').disabled = true;
+  try {
+    const r = await fetch('/api/rooms?action=start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sbSession?.access_token}` },
+      body: JSON.stringify({ roomId: mp.roomId }),
+    });
+    const d = await r.json();
+    if (!d.ok) { alert(d.error || 'Could not start'); return; }
+    // Broadcast to non-host players, then start locally (broadcast self: false)
+    if (mp.channel) {
+      mp.channel.send({ type: 'broadcast', event: 'MATCH_START', payload: d });
+    }
+    mpStartMatch(d);
+  } finally { $('mpStartBtn').disabled = false; }
+};
+
+$('mpLeaveBtn').onclick = () => mpLeave();
+
+$('mpResultClose').onclick = async () => {
+  $('mpResults').classList.remove('open');
+  if (mp.channel) { await supabase.removeChannel(mp.channel); mp.channel = null; }
+  mp.phase = null; mp.roomId = null; mp.code = null; mp.isHost = false;
+  mp.others = {};
+  campaign = mp.prevCampaign;
+  wasm.set_campaign(campaign);
+  wasm.set_checkpoint(savedCp[campaign]);
+  wasm.init((Math.random() * 0xffffffff) >>> 0);
+};
+
+// ========== END MULTIPLAYER ==========
+
+// ========== FRIENDS ==========
+
+const fr = {
+  friends: [], incoming: [], outgoing: [],
+  loaded: false, notifChannel: null,
+};
+
+async function loadFriends() {
+  if (!sbSession) return;
+  try {
+    const r = await fetch('/api/friends', { headers: { Authorization: `Bearer ${sbSession.access_token}` } });
+    const d = await r.json();
+    fr.friends  = d.friends  || [];
+    fr.incoming = d.incoming || [];
+    fr.outgoing = d.outgoing || [];
+    fr.loaded = true;
+    updateFriendBadge();
+    renderFriendTabs();
+  } catch {}
+}
+
+function updateFriendBadge() {
+  const n = fr.incoming.length;
+  $('ftabBadge').textContent = n > 0 ? `(${n})` : '';
+  $('pmFriendBadge').textContent = n > 0 ? `(${n})` : '';
+}
+
+function renderFriendTabs() {
+  // ── Friends tab ──
+  $('ftabContentFriends').innerHTML = fr.friends.length
+    ? fr.friends.map(f =>
+        `<div class="row">
+          <span class="who">${esc(f.name)} <small>· ${esc(f.city || '—')}</small></span>
+          <div style="display:flex;gap:6px">
+            ${mp.code ? `<button class="ftbtn" data-action="invite" data-pid="${f.playerId}" data-name="${esc(f.name)}">INVITE</button>` : ''}
+            <button class="ftbtn del" data-action="remove" data-fid="${f.id}">✕</button>
+          </div>
+        </div>`).join('')
+    : '<div style="text-align:center;color:#8fa3bb;font-size:12px;padding:12px">No friends yet — find pilots by call sign</div>';
+
+  // ── Requests tab ──
+  $('ftabContentRequests').innerHTML = [
+    ...fr.incoming.map(r =>
+      `<div class="row">
+        <span class="who">${esc(r.name)} <small>· wants to fly together</small></span>
+        <div style="display:flex;gap:6px">
+          <button class="ftbtn" data-action="accept" data-fid="${r.id}">✓ Accept</button>
+          <button class="ftbtn del" data-action="decline" data-fid="${r.id}">Decline</button>
+        </div>
+      </div>`),
+    ...fr.outgoing.map(r =>
+      `<div class="row" style="opacity:0.65">
+        <span class="who">${esc(r.name)} <small>· request sent</small></span>
+        <button class="ftbtn del" data-action="remove" data-fid="${r.id}">Cancel</button>
+      </div>`),
+  ].join('') || '<div style="text-align:center;color:#8fa3bb;font-size:12px;padding:12px">No pending requests</div>';
+
+  updateFriendBadge();
+}
+
+async function openFriendsOverlay() {
+  // Reset to friends tab
+  document.querySelectorAll('.ftab').forEach((t, i) => t.classList.toggle('active', i === 0));
+  $('ftabContentFriends').style.display = '';
+  $('ftabContentRequests').style.display = 'none';
+  $('ftabContentSearch').style.display = 'none';
+  $('fSearchInput').value = '';
+  $('fSearchResults').innerHTML = '';
+  $('friendsOverlay').classList.add('open');
+  await loadFriends();
+}
+
+async function frInvite(playerId, friendName) {
+  if (!mp.code) return;
+  try {
+    await new Promise((resolve, reject) => {
+      const ch = supabase.channel(`user:${playerId}`);
+      const t = setTimeout(() => { supabase.removeChannel(ch); reject(); }, 5000);
+      ch.subscribe(async (status) => {
+        if (status !== 'SUBSCRIBED') return;
+        clearTimeout(t);
+        try {
+          await ch.send({ type: 'broadcast', event: 'ROOM_INVITE',
+            payload: { fromName: profile?.name || 'PILOT', code: mp.code } });
+        } finally { supabase.removeChannel(ch); resolve(); }
+      });
+    });
+    showToast(`Invite sent to <strong>${esc(friendName)}</strong>!`, [], 2500);
+  } catch { showToast('Could not reach friend', [], 2500); }
+}
+
+async function frRespond(friendshipId, accept) {
+  await fetch('/api/friends?action=respond', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sbSession?.access_token}` },
+    body: JSON.stringify({ friendshipId, accept }),
+  });
+  await loadFriends();
+}
+
+async function frRemove(friendshipId) {
+  await fetch('/api/friends?action=remove', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sbSession?.access_token}` },
+    body: JSON.stringify({ friendshipId }),
+  });
+  await loadFriends();
+}
+
+async function subscribeNotifChannel(userId) {
+  if (fr.notifChannel) { supabase.removeChannel(fr.notifChannel); fr.notifChannel = null; }
+  fr.notifChannel = supabase.channel(`user:${userId}`, {
+    config: { broadcast: { self: false } },
+  });
+  fr.notifChannel
+    .on('broadcast', { event: 'ROOM_INVITE' }, ({ payload }) => {
+      showToast(
+        `<strong>${esc(payload.fromName)}</strong> invited you to room <strong style="color:#ffd23e;letter-spacing:3px">${esc(payload.code)}</strong>`,
+        [{ label: 'JOIN', action: () => {
+          $('mpCodeInput').value = payload.code;
+          $('mpStep1').style.display = 'none';
+          $('mpJoinStep').style.display = '';
+          $('mpOverlay').classList.add('open');
+          $('friendsOverlay').classList.remove('open');
+          profileModal.classList.remove('open');
+          setTimeout(() => $('mpJoinConfirmBtn').click(), 200);
+        }}],
+        10000
+      );
+    })
+    .on('postgres_changes', {
+      event: 'INSERT', schema: 'public', table: 'friendships',
+      filter: `addressee_id=eq.${userId}`,
+    }, async ({ new: row }) => {
+      await loadFriends();
+      const req = fr.incoming.find(f => f.id === row?.id);
+      if (req) showToast(`<strong>${esc(req.name)}</strong> wants to be friends`, [
+        { label: 'Accept', action: () => frRespond(row.id, true) },
+      ], 8000);
+    })
+    .subscribe();
+}
+
+// ── friend UI events ──
+
+// Tab switching
+$('friendsOverlay').addEventListener('click', e => {
+  const tab = e.target.closest('.ftab');
+  if (tab) {
+    document.querySelectorAll('.ftab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    const which = tab.dataset.tab;
+    $('ftabContentFriends').style.display  = which === 'friends'  ? '' : 'none';
+    $('ftabContentRequests').style.display = which === 'requests' ? '' : 'none';
+    $('ftabContentSearch').style.display   = which === 'search'   ? '' : 'none';
+    if (which === 'search') setTimeout(() => $('fSearchInput').focus(), 50);
+    if (which !== 'search') renderFriendTabs();
+  }
+  // Action buttons (invite, remove, accept, decline)
+  const btn = e.target.closest('[data-action]');
+  if (btn) {
+    const act = btn.dataset.action;
+    if (act === 'invite')  frInvite(btn.dataset.pid, btn.dataset.name);
+    if (act === 'remove')  frRemove(btn.dataset.fid);
+    if (act === 'accept')  frRespond(btn.dataset.fid, true);
+    if (act === 'decline') frRespond(btn.dataset.fid, false);
+  }
+});
+
+// Search box
+let fSearchTimer = null;
+$('fSearchInput').addEventListener('input', e => {
+  clearTimeout(fSearchTimer);
+  const q = e.target.value.trim();
+  if (!q) { $('fSearchResults').innerHTML = ''; return; }
+  fSearchTimer = setTimeout(async () => {
+    const r = await fetch('/api/friends?action=search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sbSession?.access_token}` },
+      body: JSON.stringify({ q }),
+    });
+    const { results } = await r.json();
+    const knownIds = new Set([...fr.friends, ...fr.outgoing, ...fr.incoming].map(f => f.playerId));
+    $('fSearchResults').innerHTML = (results || []).map(p =>
+      `<div class="row">
+        <span class="who">${esc(p.name)} <small>· ${esc(p.city || '—')}</small></span>
+        ${knownIds.has(p.id)
+          ? '<span style="color:#8fa3bb;font-size:12px">Added</span>'
+          : `<button class="ftbtn" data-action="add" data-pid="${p.id}">+ ADD</button>`}
+      </div>`
+    ).join('') || '<div style="text-align:center;color:#8fa3bb;font-size:12px;padding:8px">No pilots found</div>';
+  }, 350);
+});
+
+$('fSearchResults').addEventListener('click', async e => {
+  const btn = e.target.closest('[data-action="add"]');
+  if (!btn || !sbSession) return;
+  btn.disabled = true; btn.textContent = 'Sending…';
+  const r = await fetch('/api/friends?action=request', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sbSession.access_token}` },
+    body: JSON.stringify({ toPlayerId: btn.dataset.pid }),
+  });
+  const d = await r.json();
+  btn.textContent = d.ok ? 'Sent ✓' : 'Error';
+  await loadFriends();
+});
+
+$('friendsClose').onclick = () => $('friendsOverlay').classList.remove('open');
+$('pmFriends').onclick = () => { profileModal.classList.remove('open'); openFriendsOverlay(); };
+$('mpInviteBtn').onclick = () => openFriendsOverlay();
+
+// ── toast notification ──
+let ntTimer = null;
+function showToast(html, actions = [], ms = 4000) {
+  $('ntMsg').innerHTML = html;
+  $('ntActions').innerHTML = actions.map((a, i) =>
+    `<button class="btn" id="ntA${i}" style="padding:6px 14px;font-size:13px;margin:0;min-width:0;width:auto">${esc(a.label)}</button>`
+  ).join('');
+  actions.forEach((a, i) => { $(`ntA${i}`).onclick = () => { hideToast(); a.action(); }; });
+  $('ntToast').style.display = 'block';
+  clearTimeout(ntTimer);
+  ntTimer = setTimeout(hideToast, ms);
+}
+function hideToast() { $('ntToast').style.display = 'none'; clearTimeout(ntTimer); }
+$('ntToast').addEventListener('click', e => { if (e.target === $('ntToast') || e.target === $('ntMsg')) hideToast(); });
+
+// ========== END FRIENDS ==========
+
 // ---------- main loop ----------
 let last = performance.now();
 function loop(now) {
   requestAnimationFrame(loop);
+  if (paused) { last = now; return; }
   let dt = (now - last) / 1000;
   last = now;
   if (dt > 0.05) dt = 0.05;
@@ -1032,15 +1888,14 @@ function loop(now) {
   const sec = SEC[Math.min(sector, SEC.length - 1)];
   const night = campaign === 1;
 
-  // persist this campaign's checkpoint the moment a sector is secured
-  if (mode === 1 && sector > savedCp[campaign]) {
+  // persist this campaign's checkpoint the moment a sector is secured (single-player only)
+  if (mode === 1 && sector > savedCp[campaign] && !mp.phase) {
     savedCp[campaign] = sector;
     localStorage.setItem(cpKeys[campaign], String(sector));
+    saveProfileToSupabase();
   }
-  // campaign victory: bank the reward BEFORE submitting so the entry
-  // carries it — day run earns a gold star, night op earns a diamond —
-  // and the next run of that campaign starts fresh from its first sector
-  if (mode === 3 && lastMode === 1) {
+  // campaign victory (single-player only): bank star/diamond reward
+  if (mode === 3 && lastMode === 1 && !mp.phase) {
     if (night) {
       diamonds = Math.min(5, diamonds + 1);
       localStorage.setItem(diaKey, String(diamonds));
@@ -1052,17 +1907,46 @@ function loop(now) {
     savedCp[campaign] = 0;
     localStorage.setItem(cpKeys[campaign], '0');
     wasm.set_checkpoint(0);
+    saveProfileToSupabase();
   }
-  if ((mode === 2 || mode === 3) && lastMode === 1) maybeSubmit(score, sector);
+  if ((mode === 2 || mode === 3) && lastMode === 1) {
+    if (mp.phase === 'playing') {
+      mpEndMatch(score, mode === 3);
+    } else {
+      maybeSubmit(score, sector);
+    }
+  }
   if (mode === 1 && lastMode !== 1) submitState = '';
-  lbbtn.style.display = mode !== 1 ? 'block' : 'none';
+  const mpActive = mp.phase === 'playing' || mp.phase === 'countdown';
+  lbbtn.style.display = mode !== 1 && !mpActive ? 'block' : 'none';
+  signinbtn.style.display = mode !== 1 && !mpActive ? 'flex' : 'none';
+  pausebtn.style.display = mode === 1 && !mpActive ? 'block' : 'none';
 
-  // sound events
+  // sound events (also tracks kills for multiplayer scoring)
   const evn = hud[10];
   for (let i = 0; i < evn; i++) {
     const code = hud[11 + i];
     if (code === 8) { secretFlash = 3.0; secretName = bossArr()[sector].secret || ''; }
+    if (mp.phase === 'playing' && (code === 2 || code === 3)) mp.myKills++;
     const fn = SFX[code]; if (fn) fn();
+  }
+
+  // Multiplayer: broadcast position/score/hp to opponents at ~20 fps
+  if (mp.phase === 'playing' && mode === 1) {
+    mp.myWaves = Math.max(mp.myWaves, wave);
+    const now2 = performance.now();
+    if (now2 - mp._lastBcast > 50 && mp.channel) {
+      mp._lastBcast = now2;
+      mp.channel.send({
+        type: 'broadcast', event: 'PLAYER_STATE',
+        payload: {
+          pid: sbSession?.user?.id,
+          name: profile?.name || 'PILOT',
+          x: pointer.x, y: pointer.y,
+          hp: hud[2], score, wave, alive: true,
+        },
+      });
+    }
   }
 
   // hi-score
@@ -1433,29 +2317,33 @@ function loop(now) {
       }
     }
 
-    if (hiscore > 0) text('HI-SCORE ' + hiscore, W / 2, 508, 14, '#dce6f0');
-    text('Drag to fly · cannon auto-fires · boss = checkpoint', W / 2, 534, 12, '#9fb0c2');
     {
-      const badges = [
-        { x: 152, label: 'W', sub: 'WING GUNS', color: '#ff9933' },
-        { x: 240, label: 'M', sub: 'MISSILES',  color: '#e84d4d' },
-        { x: 328, label: 'S', sub: 'SHIELD',    color: '#3da5ff' },
-      ];
-      const by = 572;
-      for (const b of badges) {
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(b.x, by, 18, 0, Math.PI * 2);
-        ctx.fillStyle = b.color + '28';
-        ctx.fill();
-        ctx.strokeStyle = b.color;
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-        ctx.restore();
-        text(b.label, b.x, by + 1, 15, b.color);
-        text(b.sub, b.x, by + 30, 9, '#8fa3bb', 'center', '600');
+      // ⚔ card 3 — multiplayer
+      const c = CARD_MP;
+      const mpReady = !!(sbSession && profile?.name);
+      ctx.save();
+      rr(c.x, c.y, c.w, c.h, 12); ctx.clip();
+      ctx.fillStyle = '#0d1e3a';
+      ctx.fillRect(c.x, c.y, c.w, c.h);
+      // subtle diagonal pulse
+      ctx.globalAlpha = 0.06 + 0.04 * Math.sin(now / 700);
+      ctx.fillStyle = '#ff9933';
+      ctx.fillRect(c.x, c.y, c.w, c.h);
+      ctx.globalAlpha = 1;
+      ctx.restore();
+      ctx.strokeStyle = mpReady ? '#2a5280' : '#1e3050'; ctx.lineWidth = 1.5;
+      rr(c.x, c.y, c.w, c.h, 12); ctx.stroke();
+      text('⚔ MULTIPLAYER', c.x + 18, c.y + 22, 16, '#e8eef6', 'left');
+      text('2–4 pilots · real-time · same sector · competitive', c.x + 18, c.y + 42, 11, '#9fb0c2', 'left');
+      if (!sbSession || !profile?.name) {
+        text('Sign in with a call sign to compete', c.x + 18, c.y + 60, 11, '#ff9933', 'left');
+      } else {
+        text('▶ TAP TO ENTER', c.x + 18, c.y + 60, 12, blink ? '#ffd23e' : '#c8a820', 'left');
       }
     }
+
+    if (hiscore > 0) text('HI-SCORE ' + hiscore, W / 2, 590, 14, '#dce6f0');
+    text('Drag to fly · cannon auto-fires · boss = checkpoint', W / 2, 614, 12, '#9fb0c2');
     text('a game by rokiroy.in', W / 2, H - 18, 12, '#8fa3bb');
   } else if (mode === 2) {
     // ---- mission failed ----
@@ -1519,5 +2407,33 @@ function loop(now) {
   }
 
   ctx.restore();
+
+  // ---- ghost players overlay ----
+  gCtx.clearRect(0, 0, ghostCanvas.width, ghostCanvas.height);
+  if (mp.phase === 'playing' && mode === 1 && Object.keys(mp.others).length) {
+    const dpr = canvas._dpr;
+    const sprGhost = mp.campaign === 1 ? sprPlayerNight : sprPlayer;
+    gCtx.save();
+    gCtx.setTransform(scale * dpr, 0, 0, scale * dpr, ox * dpr, oy * dpr);
+    for (const st of Object.values(mp.others)) {
+      if (!st.alive) continue;
+      // jet silhouette at 50% opacity (st.x/y are already in game coords from broadcast)
+      gCtx.save();
+      gCtx.globalAlpha = 0.5;
+      gCtx.translate(st.x, st.y);
+      gCtx.drawImage(sprGhost, -36, -36);
+      gCtx.restore();
+      // name + score label above ghost
+      gCtx.save();
+      gCtx.globalAlpha = 0.85;
+      gCtx.font = 'bold 10px "Avenir Next","Segoe UI",sans-serif';
+      gCtx.textAlign = 'center';
+      gCtx.textBaseline = 'bottom';
+      gCtx.fillStyle = '#ffd23e';
+      gCtx.fillText(`${st.name}  ${st.score}`, st.x, st.y - 44);
+      gCtx.restore();
+    }
+    gCtx.restore();
+  }
 }
 requestAnimationFrame(loop);

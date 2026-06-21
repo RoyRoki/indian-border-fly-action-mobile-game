@@ -61,6 +61,10 @@
   .row .pts { font-weight: 700; color: #ffd23e; }
   .row.me { background: rgba(255,153,51,0.12); border-radius: 6px; }
   .row-divider { text-align: center; color: #3a5070; font-size: 13px; padding: 6px 0; letter-spacing: 4px; }
+  .ftab { flex: 1; padding: 8px 4px; font-size: 12px; font-weight: 700; letter-spacing: 0.5px; background: transparent; color: #8fa3bb; border: 1px solid #2d415f; border-radius: 8px; cursor: pointer; }
+  .ftab.active { background: #ff9933; color: #1a2233; border-color: #ff9933; }
+  .ftbtn { padding: 5px 10px; font-size: 12px; font-weight: 700; background: rgba(255,153,51,0.15); color: #ff9933; border: 1px solid #7a4500; border-radius: 6px; cursor: pointer; white-space: nowrap; }
+  .ftbtn.del { background: rgba(200,40,40,0.1); color: #ff5f4f; border-color: #7a2020; }
   .lb-title-row { display: flex; align-items: center; justify-content: space-between; }
   .lb-title-row h2 { margin: 0; }
   .lb-pilot-count { display: flex; align-items: center; gap: 4px; color: #8fa3bb; font-size: 13px; }
@@ -72,22 +76,167 @@
     background: rgba(13,22,38,0.85); color: #ffd23e; border: 1px solid #2d415f;
     border-radius: 24px; padding: 10px 18px; font-size: 14px; font-weight: 700; cursor: pointer;
   }
+  #signinbtn {
+    position: fixed; right: 12px; bottom: 12px; z-index: 5; display: none;
+    background: rgba(13,22,38,0.85); color: #e8eef6; border: 1px solid #2d415f;
+    border-radius: 24px; padding: 9px 15px; font-size: 13px; font-weight: 700; cursor: pointer;
+    align-items: center; gap: 8px;
+  }
+  #pausebtn {
+    position: fixed; left: 12px; bottom: 12px; z-index: 5; display: none;
+    background: rgba(13,22,38,0.7); color: #e8eef6; border: 1px solid #2d415f;
+    border-radius: 8px; padding: 8px 12px; font-size: 18px; line-height: 1; cursor: pointer;
+  }
+  #pausePanel {
+    position: fixed; inset: 0; z-index: 20; display: none;
+    align-items: center; justify-content: center; flex-direction: column; gap: 12px;
+    background: rgba(4,8,14,0.78);
+  }
+  #pausePanel.open { display: flex; }
+  #pausePanel .pbtn {
+    width: 200px; padding: 14px; font-size: 15px; font-weight: 700; letter-spacing: 1px;
+    border: 1px solid #2d415f; border-radius: 10px; cursor: pointer;
+  }
+  #pausePanel #resumeBtn  { background: #ff9933; color: #1a2233; border-color: #ff9933; }
+  #pausePanel #menuBtn    { background: rgba(13,22,38,0.9); color: #e8eef6; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <button id="lbbtn">🏆 LEADERBOARD</button>
+<button id="pausebtn">⏸</button>
+<div id="pausePanel">
+  <button class="pbtn" id="resumeBtn">▶ RESUME</button>
+  <button class="pbtn" id="menuBtn">↩ MENU</button>
+</div>
+<button id="signinbtn">
+  <svg width="16" height="16" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg">
+    <path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.875 2.684-6.615z"/>
+    <path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332C2.438 15.983 5.482 18 9 18z"/>
+    <path fill="#FBBC05" d="M3.964 10.71c-.18-.54-.282-1.117-.282-1.71s.102-1.17.282-1.71V4.958H.957C.347 6.173 0 7.548 0 9s.348 2.827.957 4.042l3.007-2.332z"/>
+    <path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0 5.482 0 2.438 2.017.957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z"/>
+  </svg>
+  <span id="signinlabel">Sign in</span>
+</button>
 
+<div class="overlay" id="profileModal">
+  <div class="panel">
+    <h2>MY PROFILE</h2>
+    <div class="sub" id="pmEmail" style="margin-bottom:8px;word-break:break-all"></div>
+    <div id="pmStats" style="display:none;background:#0a1220;border:1px solid #1e3050;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px;line-height:1.9;color:#c8d8e8"></div>
+    <label for="editName">CALL SIGN</label>
+    <input id="editName" maxlength="14" autocomplete="off">
+    <label for="editCity">CITY</label>
+    <input id="editCity" maxlength="14" autocomplete="off">
+    <button class="btn" id="pmFriends" style="background:rgba(13,22,38,0.9);color:#e8eef6;border:1px solid #2d415f;margin-top:0">👥 FRIENDS <span id="pmFriendBadge" style="color:#ff9933"></span></button>
+    <button class="btn" id="pmSave">SAVE CHANGES</button>
+    <div id="pmStatus" style="display:none;font-size:13px;text-align:center;margin-top:10px;padding:8px 0"></div>
+    <button class="btn" id="pmLogout" style="background:rgba(200,40,40,0.15);color:#ff5f4f;border:1px solid #7a2020;margin-top:8px">SIGN OUT</button>
+    <button class="btn ghost" id="pmClose">cancel</button>
+  </div>
+</div>
 <div class="overlay" id="profileOverlay">
   <div class="panel">
-    <h2>PILOT ID</h2>
-    <div class="sub">Shown on the global leaderboard</div>
-    <label for="pname">CALL SIGN / NAME</label>
-    <input id="pname" maxlength="14" placeholder="e.g. ROKI" autocomplete="off">
-    <label for="pcity">CITY</label>
-    <input id="pcity" maxlength="14" placeholder="e.g. Bengaluru" autocomplete="off">
-    <button class="btn" id="psave">SAVE &amp; SUBMIT SCORE</button>
+    <div id="profileStep1">
+      <h2>SUBMIT SCORE</h2>
+      <div class="sub">Sign in to appear on the global leaderboard</div>
+      <button class="btn" id="googleBtn" style="display:flex;align-items:center;justify-content:center;gap:10px;margin-top:20px">
+        <svg width="18" height="18" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg">
+          <path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.875 2.684-6.615z"/>
+          <path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332C2.438 15.983 5.482 18 9 18z"/>
+          <path fill="#FBBC05" d="M3.964 10.71c-.18-.54-.282-1.117-.282-1.71s.102-1.17.282-1.71V4.958H.957C.347 6.173 0 7.548 0 9s.348 2.827.957 4.042l3.007-2.332z"/>
+          <path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0 5.482 0 2.438 2.017.957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z"/>
+        </svg>
+        Sign in with Google
+      </button>
+    </div>
+    <div id="profileStep2" style="display:none">
+      <h2>PILOT ID</h2>
+      <div class="sub">Your call sign on the leaderboard</div>
+      <label for="pname">CALL SIGN / NAME</label>
+      <input id="pname" maxlength="14" placeholder="e.g. ROKI" autocomplete="off">
+      <label for="pcity">CITY</label>
+      <input id="pcity" maxlength="14" placeholder="e.g. Bengaluru" autocomplete="off">
+      <button class="btn" id="psave">SAVE &amp; SUBMIT SCORE</button>
+    </div>
     <button class="btn ghost" id="pskip">skip — don't submit</button>
+  </div>
+</div>
+
+<!-- ── FRIENDS overlay ── -->
+<div class="overlay" id="friendsOverlay">
+  <div class="panel">
+    <h2>👥 FRIENDS</h2>
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <button class="ftab active" data-tab="friends">Friends</button>
+      <button class="ftab" data-tab="requests">Requests <span id="ftabBadge" style="color:#ff9933"></span></button>
+      <button class="ftab" data-tab="search">Find Pilots</button>
+    </div>
+    <div id="ftabContentFriends"></div>
+    <div id="ftabContentRequests" style="display:none"></div>
+    <div id="ftabContentSearch" style="display:none">
+      <input id="fSearchInput" placeholder="Search call sign…" maxlength="14" autocomplete="off">
+      <div id="fSearchResults" style="margin-top:10px;min-height:40px"></div>
+    </div>
+    <button class="btn ghost" id="friendsClose" style="margin-top:10px">close</button>
+  </div>
+</div>
+
+<!-- notification toast (friend requests, room invites) -->
+<div id="ntToast" style="display:none;position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:50;
+  background:#0d1626;border:1px solid #2d415f;border-radius:12px;padding:12px 16px;
+  font-size:13px;color:#e8eef6;text-align:center;min-width:220px;max-width:80vw;
+  box-shadow:0 4px 24px rgba(0,0,0,0.6)">
+  <div id="ntMsg"></div>
+  <div id="ntActions" style="margin-top:8px;display:flex;gap:8px;justify-content:center"></div>
+</div>
+
+<!-- ── MULTIPLAYER overlays ── -->
+<div class="overlay" id="mpOverlay">
+  <div class="panel">
+    <h2>⚔ MULTIPLAYER</h2>
+    <div class="sub" style="margin-bottom:14px">Real-time 2–4 player · same level · competitive</div>
+    <div id="mpStep1">
+      <button class="btn" id="mpCreateBtn">CREATE ROOM</button>
+      <button class="btn" id="mpJoinBtn" style="margin-top:10px;background:rgba(13,22,38,0.9);color:#e8eef6;border:1px solid #2d415f">JOIN ROOM</button>
+    </div>
+    <div id="mpJoinStep" style="display:none">
+      <label for="mpCodeInput">ROOM CODE</label>
+      <input id="mpCodeInput" maxlength="4" placeholder="AB42" autocomplete="off"
+        style="text-transform:uppercase;letter-spacing:6px;font-size:22px;text-align:center">
+      <button class="btn" id="mpJoinConfirmBtn">JOIN</button>
+      <button class="btn ghost" id="mpJoinBackBtn">back</button>
+    </div>
+    <div id="mpLobby" style="display:none">
+      <div style="text-align:center;margin:8px 0 12px">
+        <div style="font-size:12px;color:#8fa3bb;letter-spacing:1px">ROOM CODE</div>
+        <div id="mpRoomCode" style="font-size:30px;letter-spacing:8px;font-weight:900;color:#ffd23e;margin:4px 0"></div>
+        <div id="mpLobbyStatus" style="font-size:12px;color:#9fb0c2"></div>
+      </div>
+      <div id="mpPlayerList" style="margin:0 0 12px;min-height:44px"></div>
+      <button class="btn" id="mpReadyBtn">READY</button>
+      <button class="btn" id="mpStartBtn" style="display:none;background:#138808;margin-top:10px">START MATCH</button>
+      <button class="btn" id="mpInviteBtn" style="background:rgba(13,22,38,0.9);color:#e8eef6;border:1px solid #2d415f;margin-top:8px">👥 INVITE FRIENDS</button>
+    </div>
+    <button class="btn ghost" id="mpLeaveBtn" style="margin-top:10px">leave</button>
+  </div>
+</div>
+
+<!-- countdown (shown over canvas during 3-2-1-GO) -->
+<div id="mpCountdown" style="display:none;position:fixed;inset:0;z-index:25;background:rgba(4,8,14,0.9);
+  align-items:center;justify-content:center;flex-direction:column;gap:10px">
+  <div id="mpCountSub" style="font-size:15px;color:#9fb0c2;letter-spacing:2px;text-align:center"></div>
+  <div id="mpCountNum" style="font-size:110px;font-weight:900;color:#ffd23e;line-height:1;
+    text-shadow:0 0 40px rgba(255,210,62,0.65)"></div>
+  <div id="mpCountPlayers" style="font-size:13px;color:#8fa3bb;margin-top:4px"></div>
+</div>
+
+<!-- match results -->
+<div class="overlay" id="mpResults">
+  <div class="panel">
+    <h2>⚔ MATCH RESULTS</h2>
+    <div id="mpResultRows" style="margin:12px 0"></div>
+    <button class="btn" id="mpResultClose">RETURN TO MENU</button>
   </div>
 </div>
 
