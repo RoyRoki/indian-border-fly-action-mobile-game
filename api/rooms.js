@@ -30,6 +30,8 @@ export async function POST(request) {
 
   // ---- CREATE ----
   if (action === 'create') {
+    const maxPlayers = Math.min(4, Math.max(2, Number(body.maxPlayers) || 4));
+
     // Attempt a unique code up to 10 times
     let code;
     for (let i = 0; i < 10; i++) {
@@ -42,12 +44,12 @@ export async function POST(request) {
 
     const { data: room, error } = await supabase
       .from('rooms')
-      .insert({ code, host_id: user.id, campaign: 0, sector: 0, seed: 0, status: 'waiting' })
+      .insert({ code, host_id: user.id, campaign: 0, sector: 0, seed: 0, status: 'waiting', max_players: maxPlayers })
       .select().single();
     if (error) return Response.json({ error: error.message }, { status: 500 });
 
     await supabase.from('room_players').insert({ room_id: room.id, player_id: user.id, ready: false });
-    return Response.json({ ok: true, code: room.code, roomId: room.id });
+    return Response.json({ ok: true, code: room.code, roomId: room.id, maxPlayers });
   }
 
   // ---- JOIN ----
@@ -56,12 +58,12 @@ export async function POST(request) {
     if (code.length !== 4) return Response.json({ error: 'invalid code' }, { status: 400 });
 
     const { data: room } = await supabase
-      .from('rooms').select('id, status').eq('code', code).eq('status', 'waiting').maybeSingle();
+      .from('rooms').select('id, status, max_players').eq('code', code).eq('status', 'waiting').maybeSingle();
     if (!room) return Response.json({ error: 'room not found' }, { status: 404 });
 
     const { count } = await supabase
       .from('room_players').select('id', { count: 'exact', head: true }).eq('room_id', room.id);
-    if (count >= 4) return Response.json({ error: 'room full' }, { status: 409 });
+    if (count >= (room.max_players || 4)) return Response.json({ error: 'room full' }, { status: 409 });
 
     // Idempotent — re-joining is fine
     const { data: existing } = await supabase
@@ -69,7 +71,7 @@ export async function POST(request) {
     if (!existing) {
       await supabase.from('room_players').insert({ room_id: room.id, player_id: user.id, ready: false });
     }
-    return Response.json({ ok: true, roomId: room.id, code });
+    return Response.json({ ok: true, roomId: room.id, code, maxPlayers: room.max_players || 4 });
   }
 
   // ---- READY ----
@@ -87,7 +89,7 @@ export async function POST(request) {
     if (!roomId) return Response.json({ error: 'missing roomId' }, { status: 400 });
 
     const { data: room } = await supabase
-      .from('rooms').select('id, host_id, status').eq('id', roomId).maybeSingle();
+      .from('rooms').select('id, host_id, status, max_players').eq('id', roomId).maybeSingle();
     if (!room)               return Response.json({ error: 'room not found' }, { status: 404 });
     if (room.host_id !== user.id) return Response.json({ error: 'not host' }, { status: 403 });
     if (room.status !== 'waiting') return Response.json({ error: 'already started' }, { status: 409 });

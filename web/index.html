@@ -63,6 +63,8 @@
   .row-divider { text-align: center; color: #3a5070; font-size: 13px; padding: 6px 0; letter-spacing: 4px; }
   .ftab { flex: 1; padding: 8px 4px; font-size: 12px; font-weight: 700; letter-spacing: 0.5px; background: transparent; color: #8fa3bb; border: 1px solid #2d415f; border-radius: 8px; cursor: pointer; }
   .ftab.active { background: #ff9933; color: #1a2233; border-color: #ff9933; }
+  .mpnBtn { width: 64px; height: 48px; border-radius: 10px; border: 2px solid #2d415f; background: transparent; color: #8fa3bb; font-size: 22px; font-weight: 900; cursor: pointer; font-family: inherit; transition: border-color .15s, color .15s, background .15s; }
+  .mpnBtn.active { border-color: #ff9933; color: #ff9933; background: rgba(255,153,51,0.13); }
   .ftbtn { padding: 5px 10px; font-size: 12px; font-weight: 700; background: rgba(255,153,51,0.15); color: #ff9933; border: 1px solid #7a4500; border-radius: 6px; cursor: pointer; white-space: nowrap; }
   .ftbtn.del { background: rgba(200,40,40,0.1); color: #ff5f4f; border-color: #7a2020; }
   .lb-title-row { display: flex; align-items: center; justify-content: space-between; }
@@ -197,6 +199,14 @@
     <h2>⚔ MULTIPLAYER</h2>
     <div class="sub" style="margin-bottom:14px">Real-time 2–4 player · same level · competitive</div>
     <div id="mpStep1">
+      <div style="margin-bottom:14px;text-align:center">
+        <div style="font-size:11px;color:#8fa3bb;letter-spacing:1px;margin-bottom:8px">MAX PLAYERS</div>
+        <div style="display:flex;gap:8px;justify-content:center">
+          <button class="mpnBtn" data-n="2">2</button>
+          <button class="mpnBtn" data-n="3">3</button>
+          <button class="mpnBtn" data-n="4">4</button>
+        </div>
+      </div>
       <button class="btn" id="mpCreateBtn">CREATE ROOM</button>
       <button class="btn" id="mpJoinBtn" style="margin-top:10px;background:rgba(13,22,38,0.9);color:#e8eef6;border:1px solid #2d415f">JOIN ROOM</button>
     </div>
@@ -215,7 +225,7 @@
       </div>
       <div id="mpPlayerList" style="margin:0 0 12px;min-height:44px"></div>
       <button class="btn" id="mpReadyBtn">READY</button>
-      <button class="btn" id="mpStartBtn" style="display:none;background:#138808;margin-top:10px">START MATCH</button>
+      <div id="mpWaitingMsg" style="display:none;text-align:center;font-size:12px;color:#ffd23e;margin-top:10px;letter-spacing:1px">STARTING…</div>
       <button class="btn" id="mpInviteBtn" style="background:rgba(13,22,38,0.9);color:#e8eef6;border:1px solid #2d415f;margin-top:8px">👥 INVITE FRIENDS</button>
     </div>
     <button class="btn ghost" id="mpLeaveBtn" style="margin-top:10px">leave</button>

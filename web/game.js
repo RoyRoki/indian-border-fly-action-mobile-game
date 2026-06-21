@@ -218,6 +218,7 @@ const mp = {
   phase: null,       // null | 'lobby' | 'countdown' | 'playing' | 'results'
   roomId: null, code: null, matchId: null,
   isHost: false,
+  maxPlayers: 2,     // host-selected cap (2-4); shown in lobby status
   campaign: 0, sector: 0, seed: 0,
   prevCampaign: 0,   // campaign active before the MP match started (restored after)
   myReady: false,
@@ -226,6 +227,7 @@ const mp = {
   startTime: 0,
   channel: null,
   _lastBcast: 0,
+  _starting: false,  // guard against double auto-start
 };
 const $ = (id) => document.getElementById(id);
 const profileOverlay = $('profileOverlay'), lbOverlay = $('lbOverlay'), lbbtn = $('lbbtn'), signinbtn = $('signinbtn');
@@ -1399,8 +1401,15 @@ function mpUpdateLobby() {
   const myP = players.find(p => p.pid === myId);
   $('mpReadyBtn').textContent = myP?.ready ? 'CANCEL READY' : 'READY';
   $('mpReadyBtn').style.background = myP?.ready ? '#138808' : '#ff9933';
-  $('mpStartBtn').style.display = (mp.isHost && allReady) ? '' : 'none';
-  $('mpLobbyStatus').textContent = `${players.length}/4 pilots · ${ready} ready`;
+  $('mpReadyBtn').disabled = mp._starting;
+  $('mpWaitingMsg').style.display = mp._starting ? '' : 'none';
+  $('mpLobbyStatus').textContent = `${players.length}/${mp.maxPlayers} pilots · ${ready} ready`;
+
+  // Auto-start: host fires once all joined players are ready (min 2)
+  if (mp.isHost && allReady && !mp._starting) {
+    mp._starting = true;
+    doMpStart();
+  }
 }
 
 function mpStartMatch({ levelId, campaign: c, sector: s, seed, matchId }) {
@@ -1511,6 +1520,7 @@ async function mpLeave() {
   $('mpCountdown').style.display = 'none';
   if (mp.channel) { await supabase.removeChannel(mp.channel); mp.channel = null; }
   mp.phase = null; mp.roomId = null; mp.code = null; mp.isHost = false; mp.myReady = false;
+  mp._starting = false;
   mp.others = {};
   // Restore pre-MP campaign state
   campaign = mp.prevCampaign;
@@ -1520,17 +1530,29 @@ async function mpLeave() {
 }
 
 // ── MP button handlers ──
+
+// Player count picker (2 / 3 / 4) — active on first load defaults to 2
+document.querySelectorAll('.mpnBtn').forEach(btn => {
+  if (Number(btn.dataset.n) === mp.maxPlayers) btn.classList.add('active');
+  btn.addEventListener('click', () => {
+    mp.maxPlayers = Number(btn.dataset.n);
+    document.querySelectorAll('.mpnBtn').forEach(b => b.classList.toggle('active', b === btn));
+  });
+});
+
 $('mpCreateBtn').onclick = async () => {
   $('mpCreateBtn').disabled = true;
   try {
     const r = await fetch('/api/rooms?action=create', {
       method: 'POST',
       headers: { Authorization: `Bearer ${sbSession.access_token}`, 'Content-Type': 'application/json' },
-      body: '{}',
+      body: JSON.stringify({ maxPlayers: mp.maxPlayers }),
     });
     const d = await r.json();
     if (!d.ok) { alert(d.error || 'Failed to create room'); return; }
     mp.roomId = d.roomId; mp.code = d.code; mp.isHost = true; mp.myReady = false;
+    mp.maxPlayers = d.maxPlayers || mp.maxPlayers;
+    mp._starting = false;
     await mpJoinChannel(d.code);
     $('mpStep1').style.display = 'none';
     $('mpLobby').style.display = '';
@@ -1576,6 +1598,8 @@ $('mpJoinConfirmBtn').onclick = async () => {
       return;
     }
     mp.roomId = d.roomId; mp.code = code; mp.isHost = false; mp.myReady = false;
+    mp.maxPlayers = d.maxPlayers || 4;
+    mp._starting = false;
     await mpJoinChannel(code);
     $('mpJoinStep').style.display = 'none';
     $('mpLobby').style.display = '';
@@ -1602,8 +1626,7 @@ $('mpReadyBtn').onclick = async () => {
   }
 };
 
-$('mpStartBtn').onclick = async () => {
-  $('mpStartBtn').disabled = true;
+async function doMpStart() {
   try {
     const r = await fetch('/api/rooms?action=start', {
       method: 'POST',
@@ -1611,14 +1634,12 @@ $('mpStartBtn').onclick = async () => {
       body: JSON.stringify({ roomId: mp.roomId }),
     });
     const d = await r.json();
-    if (!d.ok) { alert(d.error || 'Could not start'); return; }
-    // Broadcast to non-host players, then start locally (broadcast self: false)
-    if (mp.channel) {
-      mp.channel.send({ type: 'broadcast', event: 'MATCH_START', payload: d });
-    }
+    if (!d.ok) { mp._starting = false; mpUpdateLobby(); return; }
+    // Broadcast to non-host players then start locally (broadcast self: false)
+    if (mp.channel) mp.channel.send({ type: 'broadcast', event: 'MATCH_START', payload: d });
     mpStartMatch(d);
-  } finally { $('mpStartBtn').disabled = false; }
-};
+  } catch { mp._starting = false; mpUpdateLobby(); }
+}
 
 $('mpLeaveBtn').onclick = () => mpLeave();
 
