@@ -138,6 +138,33 @@ export async function GET(request) {
       merged.push(b);
     }
   }
+
+  // Extra consolidation for the authenticated viewer: if their Supabase entry and a
+  // blob entry share the same name (case-insensitive) but differ only in city, merge
+  // them — this handles the common case where someone played anonymously (city="—" or
+  // slightly different spelling) then later signed up with a proper city.
+  if (qUid && qName) {
+    let myIdx = merged.findIndex(e => e.uid === qUid);
+    if (myIdx !== -1) {
+      const myName = merged[myIdx].name.toLowerCase();
+      for (let i = merged.length - 1; i >= 0; i--) {
+        if (i === myIdx) continue;
+        const e = merged[i];
+        if (!e.uid && e.name.toLowerCase() === myName) {
+          // Absorb this blob entry into the user's authenticated row
+          if (e.score > merged[myIdx].score) {
+            merged[myIdx].score  = e.score;
+            merged[myIdx].sector = e.sector;
+          }
+          merged[myIdx].wins = Math.max(merged[myIdx].wins, e.wins || 0);
+          merged[myIdx].dia  = Math.max(merged[myIdx].dia,  e.dia  || 0);
+          merged.splice(i, 1);
+          if (i < myIdx) myIdx--;
+        }
+      }
+    }
+  }
+
   merged.sort((a, b) => b.score - a.score);
 
   // Count all registered players (not just those with scores)
