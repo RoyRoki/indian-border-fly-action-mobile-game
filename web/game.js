@@ -228,6 +228,7 @@ const mp = {
   channel: null,
   _lastBcast: 0,
   _starting: false,  // guard against double auto-start
+  _pollTimer: null,  // interval for polling match results while waiting for others
 };
 const $ = (id) => document.getElementById(id);
 const profileOverlay = $('profileOverlay'), lbOverlay = $('lbOverlay'), lbbtn = $('lbbtn'), signinbtn = $('signinbtn');
@@ -1359,8 +1360,10 @@ async function mpJoinChannel(code) {
     .on('broadcast', { event: 'MATCH_START' }, ({ payload }) => mpStartMatch(payload))
     .on('broadcast', { event: 'PLAYER_STATE' }, ({ payload }) => {
       const myId = sbSession?.user?.id;
-      if (mp.phase === 'playing' && payload.pid && payload.pid !== myId) {
-        mp.others[payload.pid] = payload;
+      if ((mp.phase === 'playing' || mp.phase === 'results') && payload.pid && payload.pid !== myId) {
+        const prev = mp.others[payload.pid];
+        // preserve smooth render position so lerp can interpolate from where ghost was
+        mp.others[payload.pid] = { ...payload, rx: prev?.rx ?? payload.x, ry: prev?.ry ?? payload.y };
       }
     })
     .subscribe(async (status) => {
@@ -1464,7 +1467,7 @@ function mpStartMatch({ levelId, campaign: c, sector: s, seed, matchId }) {
 async function mpEndMatch(finalScore, survived) {
   mp.phase = 'results';
 
-  // Broadcast final state so ghosts freeze in place
+  // Broadcast final state so others know this player finished
   if (mp.channel) {
     mp.channel.send({
       type: 'broadcast', event: 'PLAYER_STATE',
@@ -1492,35 +1495,66 @@ async function mpEndMatch(finalScore, survived) {
         playTimeSec: Math.floor((Date.now() - mp.startTime) / 1000),
       }),
     });
-    const { results } = await r.json();
-    mpRenderResults(results);
+    const data = await r.json();
+    const { results, allSubmitted, totalPlayers } = data;
+    mpRenderResults(results, !allSubmitted, totalPlayers || mp.maxPlayers);
+    if (!allSubmitted) mpPollResults();
   } catch {
     $('mpResultRows').innerHTML = '<div style="text-align:center;color:#ff5f4f;padding:16px">Failed to submit results</div>';
   }
 }
 
-function mpRenderResults(results) {
+async function mpPollResults() {
+  if (mp._pollTimer) clearInterval(mp._pollTimer);
+  mp._pollTimer = setInterval(async () => {
+    if (!mp.matchId) { clearInterval(mp._pollTimer); mp._pollTimer = null; return; }
+    try {
+      const r = await fetch(`/api/match?matchId=${encodeURIComponent(mp.matchId)}`, {
+        headers: { Authorization: `Bearer ${sbSession?.access_token}` },
+      });
+      const { results, allSubmitted, totalPlayers } = await r.json();
+      mpRenderResults(results, !allSubmitted, totalPlayers || mp.maxPlayers);
+      if (allSubmitted) { clearInterval(mp._pollTimer); mp._pollTimer = null; }
+    } catch {}
+  }, 2000);
+}
+
+function mpRenderResults(results, waiting, totalPlayers) {
   const medals = ['🥇', '🥈', '🥉'];
   const myId = sbSession?.user?.id;
+  const pending = Math.max(0, (totalPlayers || 0) - (results?.length || 0));
+  const header = waiting
+    ? `<div style="text-align:center;color:#ffd23e;font-size:12px;padding:6px 0 4px;letter-spacing:1px">
+        ⏳ Waiting for ${pending} more pilot${pending !== 1 ? 's' : ''} to finish…
+       </div>`
+    : '';
   const rows = (results || []).map((r, i) => {
     const me = r.player_id === myId;
     const rk = r.rank || (i + 1);
+    const w = r.mpWins || 0;
+    const l = r.mpLosses || 0;
     return `<div class="row${me ? ' me' : ''}">
       <span class="rank">${medals[rk - 1] || rk}</span>
       <span class="who">${esc(r.players?.name || 'PILOT')} <small>· ${esc(r.players?.city || '—')}</small></span>
       <span class="pts">${(r.score || 0).toLocaleString()}</span>
     </div>
-    <div style="font-size:11px;color:#8fa3bb;padding:1px 0 6px 34px">${r.kills || 0} kills · Wave ${r.waves_cleared || 0}/5${r.survived ? ' · Survived ✓' : ''}</div>`;
+    <div style="font-size:11px;color:#8fa3bb;padding:1px 0 6px 34px">${r.kills || 0} kills · Wave ${r.waves_cleared || 0}/5${r.survived ? ' · Survived ✓' : ''}
+      <span style="color:#7fe06a;margin-left:8px">${w}W</span><span style="color:#ff5f4f"> ${l}L</span>
+    </div>`;
   });
-  $('mpResultRows').innerHTML = rows.join('') || '<div style="text-align:center;color:#8fa3bb;padding:16px">No results yet…</div>';
+  $('mpResultRows').innerHTML = header + (rows.join('') || '<div style="text-align:center;color:#8fa3bb;padding:16px">No results yet…</div>');
 }
 
 async function mpLeave() {
   $('mpOverlay').classList.remove('open');
   $('mpCountdown').style.display = 'none';
+  $('mpInvitePanel').style.display = 'none';
+  $('mpReadyBtn').style.display = '';
+  $('mpInviteBtn').style.display = '';
   if (mp.channel) { await supabase.removeChannel(mp.channel); mp.channel = null; }
   mp.phase = null; mp.roomId = null; mp.code = null; mp.isHost = false; mp.myReady = false;
   mp._starting = false;
+  if (mp._pollTimer) { clearInterval(mp._pollTimer); mp._pollTimer = null; }
   mp.others = {};
   // Restore pre-MP campaign state
   campaign = mp.prevCampaign;
@@ -1860,7 +1894,47 @@ $('fSearchResults').addEventListener('click', async e => {
 
 $('friendsClose').onclick = () => $('friendsOverlay').classList.remove('open');
 $('pmFriends').onclick = () => { profileModal.classList.remove('open'); openFriendsOverlay(); };
-$('mpInviteBtn').onclick = () => openFriendsOverlay();
+$('mpInviteBtn').onclick = async () => {
+  // Show inline invite panel (friends list with INVITE buttons, no overlay switch)
+  $('mpReadyBtn').style.display   = 'none';
+  $('mpWaitingMsg').style.display = 'none';
+  $('mpInviteBtn').style.display  = 'none';
+  $('mpInvitePanel').style.display = '';
+  // Render friends list
+  const renderInviteList = () => {
+    if (!fr.friends.length) {
+      $('mpInviteList').innerHTML = '<div style="text-align:center;color:#8fa3bb;font-size:12px;padding:12px">No friends yet — add pilots from your profile</div>';
+      return;
+    }
+    $('mpInviteList').innerHTML = fr.friends.map(f =>
+      `<div class="row" id="mpInvRow_${f.playerId}">
+        <span class="who">${esc(f.name)} <small>· ${esc(f.city || '—')}</small></span>
+        <button class="ftbtn" data-action="mpinvite" data-pid="${f.playerId}" data-name="${esc(f.name)}">INVITE</button>
+      </div>`
+    ).join('');
+  };
+  renderInviteList();
+  if (!fr.loaded) { await loadFriends(); renderInviteList(); }
+};
+
+$('mpInviteBackBtn').onclick = () => {
+  $('mpInvitePanel').style.display = 'none';
+  $('mpReadyBtn').style.display    = '';
+  $('mpInviteBtn').style.display   = '';
+  if (mp._starting) $('mpWaitingMsg').style.display = '';
+};
+
+// Handle clicks inside the inline invite panel
+$('mpInviteList').addEventListener('click', async e => {
+  const btn = e.target.closest('[data-action="mpinvite"]');
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  btn.textContent = 'SENDING…';
+  await frInvite(btn.dataset.pid, btn.dataset.name);
+  btn.textContent = 'SENT ✓';
+  btn.style.color = '#7fe06a';
+  setTimeout(() => { btn.textContent = 'INVITE'; btn.disabled = false; btn.style.color = ''; }, 3000);
+});
 
 // ── toast notification ──
 let ntTimer = null;
@@ -1955,7 +2029,7 @@ function loop(now) {
   if (mp.phase === 'playing' && mode === 1) {
     mp.myWaves = Math.max(mp.myWaves, wave);
     const now2 = performance.now();
-    if (now2 - mp._lastBcast > 50 && mp.channel) {
+    if (now2 - mp._lastBcast > 30 && mp.channel) {
       mp._lastBcast = now2;
       mp.channel.send({
         type: 'broadcast', event: 'PLAYER_STATE',
@@ -2435,12 +2509,17 @@ function loop(now) {
     const sprGhost = mp.campaign === 1 ? sprPlayerNight : sprPlayer;
     gCtx.save();
     gCtx.setTransform(scale * dpr, 0, 0, scale * dpr, ox * dpr, oy * dpr);
+    // exponential smoothing: lambda=18 → ~63% closure in ~56ms (~3 broadcast intervals)
+    const alpha = 1 - Math.exp(-18 * dt);
     for (const st of Object.values(mp.others)) {
       if (!st.alive) continue;
-      // jet silhouette at 50% opacity (st.x/y are already in game coords from broadcast)
+      // interpolate render position toward broadcast target
+      st.rx = (st.rx ?? st.x) + (st.x - (st.rx ?? st.x)) * alpha;
+      st.ry = (st.ry ?? st.y) + (st.y - (st.ry ?? st.y)) * alpha;
+      // jet silhouette at 50% opacity
       gCtx.save();
       gCtx.globalAlpha = 0.5;
-      gCtx.translate(st.x, st.y);
+      gCtx.translate(st.rx, st.ry);
       gCtx.drawImage(sprGhost, -36, -36);
       gCtx.restore();
       // name + score label above ghost
@@ -2450,7 +2529,7 @@ function loop(now) {
       gCtx.textAlign = 'center';
       gCtx.textBaseline = 'bottom';
       gCtx.fillStyle = '#ffd23e';
-      gCtx.fillText(`${st.name}  ${st.score}`, st.x, st.y - 44);
+      gCtx.fillText(`${st.name}  ${st.score}`, st.rx, st.ry - 44);
       gCtx.restore();
     }
     gCtx.restore();

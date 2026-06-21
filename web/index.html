@@ -227,6 +227,12 @@
       <button class="btn" id="mpReadyBtn">READY</button>
       <div id="mpWaitingMsg" style="display:none;text-align:center;font-size:12px;color:#ffd23e;margin-top:10px;letter-spacing:1px">STARTING…</div>
       <button class="btn" id="mpInviteBtn" style="background:rgba(13,22,38,0.9);color:#e8eef6;border:1px solid #2d415f;margin-top:8px">👥 INVITE FRIENDS</button>
+      <!-- inline friend invite panel — shown instead of lobby content -->
+      <div id="mpInvitePanel" style="display:none;margin-top:4px">
+        <div style="font-size:11px;color:#8fa3bb;letter-spacing:1px;margin-bottom:10px;text-align:center">TAP A PILOT TO INVITE</div>
+        <div id="mpInviteList" style="max-height:220px;overflow-y:auto"></div>
+        <button class="btn ghost" id="mpInviteBackBtn" style="margin-top:6px">back to lobby</button>
+      </div>
     </div>
     <button class="btn ghost" id="mpLeaveBtn" style="margin-top:10px">leave</button>
   </div>
