@@ -655,21 +655,24 @@ async function lbRefresh() {
   let startY = 0, pulling = false, dist = 0;
   const THRESHOLD = 64;
   panel.addEventListener('touchstart', e => {
+    pulling = false; dist = 0;
     if (panel.scrollTop === 0 && lbOverlay.classList.contains('open')) {
       startY = e.touches[0].clientY;
       pulling = true;
-      dist = 0;
     }
   }, { passive: true });
+  // passive:false so we can preventDefault() and stop the browser stealing the gesture
   panel.addEventListener('touchmove', e => {
     if (!pulling) return;
-    dist = Math.max(0, e.touches[0].clientY - startY);
-    if (dist < 8) return;
+    const dy = e.touches[0].clientY - startY;
+    if (dy <= 0) { pulling = false; return; }
+    e.preventDefault();
+    dist = dy;
     const pull = $('lbpull');
     pull.style.display = 'block';
-    pull.style.opacity = Math.min(dist / THRESHOLD, 1);
-    pull.textContent = dist >= THRESHOLD ? '↑ release to refresh' : '↓ pull to refresh';
-  }, { passive: true });
+    pull.style.opacity = String(Math.min(dy / THRESHOLD, 1));
+    pull.textContent = dy >= THRESHOLD ? '↑ release to refresh' : '↓ pull to refresh';
+  }, { passive: false });
   panel.addEventListener('touchend', () => {
     if (!pulling) return;
     pulling = false;
