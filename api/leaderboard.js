@@ -175,7 +175,8 @@ export async function GET(request) {
       .select('id', { count: 'exact', head: true });
     if (count && count > totalPilots) totalPilots = count;
   } catch { /* fall back to score count */ }
-  const top = merged.slice(0, 10).map(({ key: _k, uid: _u, ...rest }) => rest);
+  const full = url.searchParams.get('full') === '1';
+  const top = merged.slice(0, full ? merged.length : 10).map(({ key: _k, uid: _u, ...rest }) => rest);
 
   let myRank = null;
   let myEntry = null;

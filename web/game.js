@@ -593,42 +593,84 @@ supabase.auth.onAuthStateChange((_ev, session) => { handleSession(session); });
 supabase.auth.getSession().then(({ data: { session } }) => {
   if (session && !sbSession) handleSession(session);
 });
+const lbMedals = ['🥇', '🥈', '🥉'];
+function lbMakeRow(t, rank, myRank) {
+  const me = myRank === rank;
+  const dia = t.dia > 0
+    ? ` <span class="dia" title="Vajra Nights victories ×${Math.min(t.dia, 5)}">${'💎'.repeat(Math.min(t.dia, 5))}</span>`
+    : '';
+  const stars = t.wins > 0 && !t.dia
+    ? ` <span class="stars" title="secured the whole border ×${Math.min(t.wins, 5)}">${'★'.repeat(Math.min(t.wins, 5))}</span>`
+    : '';
+  return `<div class="row${me ? ' me' : ''}">
+    <span class="rank">${lbMedals[rank - 1] || rank}</span>
+    <span class="who">${esc(t.name)}${stars}${dia} <small>· ${esc(t.city)} · S${(t.sector | 0) + 1}</small></span>
+    <span class="pts">${t.score}</span></div>`;
+}
+function lbQS(extra) {
+  const p = new URLSearchParams(extra || {});
+  if (sbSession?.user?.id) {
+    p.set('uid', sbSession.user.id);
+    p.set('name', profile?.name || '');
+    p.set('city', profile?.city || '');
+  } else if (profile?.name) {
+    p.set('name', profile.name);
+    p.set('city', profile.city || '');
+  }
+  const s = p.toString();
+  return s ? '?' + s : '';
+}
+let _lbMyRank = 0, _lbTopHtml = '', _lbExpanded = false;
+
 lbbtn.onclick = async () => {
   lbOverlay.classList.add('open');
   $('lbstatus').textContent = 'loading…';
   $('lbrows').innerHTML = '';
   $('lbpilotcount').textContent = '';
+  $('lbviewall').style.display = 'none';
+  _lbExpanded = false;
   try {
-    const uid = sbSession?.user?.id;
-    const qs = uid
-      ? `?uid=${encodeURIComponent(uid)}&name=${encodeURIComponent(profile?.name || '')}&city=${encodeURIComponent(profile?.city || '')}`
-      : (profile?.name ? `?name=${encodeURIComponent(profile.name)}&city=${encodeURIComponent(profile.city || '')}` : '');
-    const r = await fetch('/api/leaderboard' + qs);
+    const r = await fetch('/api/leaderboard' + lbQS());
     const { top, myRank, myEntry, totalPilots } = await r.json();
     if (!top?.length) { $('lbstatus').textContent = 'No scores yet — be the first!'; return; }
     $('lbstatus').textContent = '';
     if (totalPilots) $('lbpilotcount').textContent = totalPilots;
-    const medals = ['🥇', '🥈', '🥉'];
-    const makeRow = (t, rank) => {
-      const me = myRank === rank;
-      const dia = t.dia > 0
-        ? ` <span class="dia" title="Vajra Nights victories ×${Math.min(t.dia, 5)}">${'💎'.repeat(Math.min(t.dia, 5))}</span>`
-        : '';
-      const stars = t.wins > 0 && !t.dia
-        ? ` <span class="stars" title="secured the whole border ×${Math.min(t.wins, 5)}">${'★'.repeat(Math.min(t.wins, 5))}</span>`
-        : '';
-      return `<div class="row${me ? ' me' : ''}">
-        <span class="rank">${medals[rank - 1] || rank}</span>
-        <span class="who">${esc(t.name)}${stars}${dia} <small>· ${esc(t.city)} · S${(t.sector | 0) + 1}</small></span>
-        <span class="pts">${t.score}</span></div>`;
-    };
-    const shown = top.map((t, i) => makeRow(t, i + 1)).join('');
+    _lbMyRank = myRank || 0;
+    const shown = top.map((t, i) => lbMakeRow(t, i + 1, _lbMyRank)).join('');
     const myRow = myRank > 10 && myEntry
-      ? `<div class="row-divider">· · ·</div>` + makeRow(myEntry, myRank)
+      ? `<div class="row-divider">· · ·</div>` + lbMakeRow(myEntry, myRank, myRank)
       : '';
-    $('lbrows').innerHTML = shown + myRow;
+    _lbTopHtml = shown + myRow;
+    $('lbrows').innerHTML = _lbTopHtml;
+    if (totalPilots > 10) {
+      $('lbviewall').textContent = 'SEE ALL PILOTS';
+      $('lbviewall').style.display = '';
+    }
   } catch { $('lbstatus').textContent = 'Could not load leaderboard.'; }
 };
+
+$('lbviewall').onclick = async () => {
+  if (_lbExpanded) {
+    $('lbrows').innerHTML = _lbTopHtml;
+    $('lbviewall').textContent = 'SEE ALL PILOTS';
+    _lbExpanded = false;
+    return;
+  }
+  const prev = $('lbviewall').textContent;
+  $('lbviewall').textContent = 'loading…';
+  $('lbviewall').disabled = true;
+  try {
+    const r = await fetch('/api/leaderboard' + lbQS({ full: '1' }));
+    const { top: all, myRank } = await r.json();
+    if (!all?.length) return;
+    _lbMyRank = myRank || _lbMyRank;
+    $('lbrows').innerHTML = all.map((t, i) => lbMakeRow(t, i + 1, _lbMyRank)).join('');
+    $('lbviewall').textContent = '← TOP 10 ONLY';
+    _lbExpanded = true;
+  } catch { $('lbviewall').textContent = prev; }
+  finally { $('lbviewall').disabled = false; }
+};
+
 $('lbclose').onclick = () => lbOverlay.classList.remove('open');
 lbOverlay.addEventListener('click', e => { if (e.target === lbOverlay) lbOverlay.classList.remove('open'); });
 
