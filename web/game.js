@@ -473,6 +473,8 @@ async function loadProfile() {
       if (cpDay > savedCp[0]) { savedCp[0] = cpDay; localStorage.setItem(cpKeys[0], String(cpDay)); }
       if (cpNight > savedCp[1]) { savedCp[1] = cpNight; localStorage.setItem(cpKeys[1], String(cpNight)); }
       wasm.set_checkpoint(savedCp[campaign]);
+      // Heal corrupted profiles: having any diamonds proves wins was once ≥ 5
+      if (diamonds > 0 && wins < 5) { wins = 5; saveProfileToSupabase(); }
       return;
     }
   } catch { /* network/db error — fall through to local migration */ }
