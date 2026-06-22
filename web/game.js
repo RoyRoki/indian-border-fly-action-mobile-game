@@ -1374,10 +1374,11 @@ async function mpJoinChannel(code) {
         const prev = mp.others[payload.pid];
         mp.others[payload.pid] = { ...payload, rx: prev?.rx ?? payload.x, ry: prev?.ry ?? payload.y };
 
-        // Last-survivor check: if every other known player is done, end my game too
+        // Last-survivor check: all expected opponents must be accounted for and done
         if (mp.phase === 'playing') {
           const others = Object.values(mp.others);
-          if (others.length > 0 && others.every(p => !p.alive)) {
+          const expected = (mp.maxPlayers || 2) - 1;
+          if (others.length >= expected && others.every(p => !p.alive)) {
             const hudNow = mem().subarray(HUD_PTR, HUD_PTR + 4);
             mpEndMatch(hudNow[1] | 0, hudNow[0] === 3);
           }
@@ -1484,6 +1485,7 @@ function mpStartMatch({ levelId, campaign: c, sector: s, seed, matchId }) {
 
 async function mpEndMatch(finalScore, survived) {
   mp.phase = 'results';
+  paused = true; // freeze the WASM game loop immediately
 
   // Broadcast final state so others know this player finished
   if (mp.channel) {
@@ -1577,6 +1579,7 @@ async function mpLeave() {
   mp._starting = false;
   if (mp._pollTimer) { clearInterval(mp._pollTimer); mp._pollTimer = null; }
   mp.others = {};
+  paused = false; // restore game loop so lobby/menu runs normally
   // Restore pre-MP campaign state
   campaign = mp.prevCampaign;
   wasm.set_campaign(campaign);
@@ -2054,9 +2057,11 @@ function loop(now) {
   // Multiplayer: broadcast position/score/hp to opponents at ~20 fps
   if (mp.phase === 'playing' && mode === 1) {
     // Redundant last-survivor check every frame so a dropped broadcast never
-    // leaves the survivor playing alone indefinitely
+    // leaves the survivor playing alone indefinitely.
+    // Require all expected opponents so 3/4-player games don't stop early.
     const _others = Object.values(mp.others);
-    if (_others.length > 0 && _others.every(p => !p.alive)) {
+    const _expected = (mp.maxPlayers || 2) - 1;
+    if (_others.length >= _expected && _others.every(p => !p.alive)) {
       mpEndMatch(score, false);
     }
     mp.myWaves = Math.max(mp.myWaves, wave);
