@@ -648,7 +648,15 @@ async function lbRefresh() {
   } catch { $('lbstatus').textContent = 'Could not load leaderboard.'; }
 }
 
-$('lbrefresh').onclick = () => lbRefresh();
+$('lbrefresh').onclick = async () => {
+  const btn = $('lbrefresh');
+  btn.classList.add('spin');
+  btn.disabled = true;
+  await loadProfile();
+  await healProfileFromLeaderboard();
+  btn.disabled = false;
+  btn.classList.remove('spin');
+};
 
 lbbtn.onclick = () => { lbOverlay.classList.add('open'); lbRefresh(); };
 
@@ -2112,6 +2120,7 @@ function loop(now) {
   if (mode === 1 && lastMode !== 1) submitState = '';
   const mpActive = mp.phase === 'playing' || mp.phase === 'countdown';
   lbbtn.style.display = mode !== 1 && !mpActive ? 'block' : 'none';
+  $('lbrefresh').style.display = mode !== 1 && !mpActive ? 'flex' : 'none';
   signinbtn.style.display = mode !== 1 && !mpActive ? 'flex' : 'none';
   pausebtn.style.display = mode === 1 && !mpActive ? 'block' : 'none';
 
