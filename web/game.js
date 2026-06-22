@@ -622,12 +622,12 @@ function lbQS(extra) {
 }
 let _lbMyRank = 0, _lbTopHtml = '', _lbExpanded = false;
 
-lbbtn.onclick = async () => {
-  lbOverlay.classList.add('open');
+async function lbRefresh() {
   $('lbstatus').textContent = 'loading…';
   $('lbrows').innerHTML = '';
   $('lbpilotcount').textContent = '';
   $('lbviewall').style.display = 'none';
+  $('lbpull').style.display = 'none';
   _lbExpanded = false;
   try {
     const r = await fetch('/api/leaderboard' + lbQS());
@@ -647,7 +647,43 @@ lbbtn.onclick = async () => {
       $('lbviewall').style.display = '';
     }
   } catch { $('lbstatus').textContent = 'Could not load leaderboard.'; }
-};
+}
+
+// Pull-to-refresh on the leaderboard panel
+{
+  const panel = lbOverlay.querySelector('.panel');
+  let startY = 0, pulling = false, dist = 0;
+  const THRESHOLD = 64;
+  panel.addEventListener('touchstart', e => {
+    if (panel.scrollTop === 0 && lbOverlay.classList.contains('open')) {
+      startY = e.touches[0].clientY;
+      pulling = true;
+      dist = 0;
+    }
+  }, { passive: true });
+  panel.addEventListener('touchmove', e => {
+    if (!pulling) return;
+    dist = Math.max(0, e.touches[0].clientY - startY);
+    if (dist < 8) return;
+    const pull = $('lbpull');
+    pull.style.display = 'block';
+    pull.style.opacity = Math.min(dist / THRESHOLD, 1);
+    pull.textContent = dist >= THRESHOLD ? '↑ release to refresh' : '↓ pull to refresh';
+  }, { passive: true });
+  panel.addEventListener('touchend', () => {
+    if (!pulling) return;
+    pulling = false;
+    if (dist >= THRESHOLD) {
+      $('lbpull').textContent = '↻ refreshing…';
+      lbRefresh();
+    } else {
+      $('lbpull').style.display = 'none';
+    }
+    dist = 0;
+  });
+}
+
+lbbtn.onclick = () => { lbOverlay.classList.add('open'); lbRefresh(); };
 
 $('lbviewall').onclick = async () => {
   if (_lbExpanded) {
