@@ -648,15 +648,7 @@ async function lbRefresh() {
   } catch { $('lbstatus').textContent = 'Could not load leaderboard.'; }
 }
 
-$('lbrefresh').onclick = async () => {
-  const btn = $('lbrefresh');
-  btn.classList.add('spin');
-  btn.disabled = true;
-  await loadProfile();
-  await healProfileFromLeaderboard();
-  btn.disabled = false;
-  btn.classList.remove('spin');
-};
+$('lbrefresh').onclick = () => window.location.reload();
 
 lbbtn.onclick = () => { lbOverlay.classList.add('open'); lbRefresh(); };
 
