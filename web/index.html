@@ -73,7 +73,7 @@
   .lb-pilot-count svg { opacity: 0.7; flex-shrink: 0; }
   .medal { color: #ffd23e; }
   #lbstatus { color: #8fa3bb; font-size: 13px; padding: 12px 0; text-align: center; }
-  #lbpull { display: none; text-align: center; font-size: 12px; color: #8fa3bb; padding: 2px 0 6px; letter-spacing: 0.5px; }
+  #lbrefresh { background: none; border: none; color: #8fa3bb; font-size: 20px; cursor: pointer; padding: 0 0 0 8px; line-height: 1; }
   #lbbtn {
     position: fixed; left: 12px; bottom: 12px; z-index: 5; display: none;
     background: rgba(13,22,38,0.85); color: #ffd23e; border: 1px solid #2d415f;
@@ -259,8 +259,8 @@
 
 <div class="overlay" id="lbOverlay">
   <div class="panel">
-    <div id="lbpull"></div>
     <div class="lb-title-row">
+      <button id="lbrefresh" title="Refresh">↻</button>
       <h2>🏆 TOP PILOTS</h2>
       <span class="lb-pilot-count"><svg viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm-5 6a5 5 0 0 1 10 0H3z"/></svg><span id="lbpilotcount"></span></span>
     </div>

@@ -627,7 +627,6 @@ async function lbRefresh() {
   $('lbrows').innerHTML = '';
   $('lbpilotcount').textContent = '';
   $('lbviewall').style.display = 'none';
-  $('lbpull').style.display = 'none';
   _lbExpanded = false;
   try {
     const r = await fetch('/api/leaderboard' + lbQS());
@@ -649,42 +648,7 @@ async function lbRefresh() {
   } catch { $('lbstatus').textContent = 'Could not load leaderboard.'; }
 }
 
-// Pull-to-refresh on the leaderboard panel
-{
-  const panel = lbOverlay.querySelector('.panel');
-  let startY = 0, pulling = false, dist = 0;
-  const THRESHOLD = 64;
-  panel.addEventListener('touchstart', e => {
-    pulling = false; dist = 0;
-    if (panel.scrollTop === 0 && lbOverlay.classList.contains('open')) {
-      startY = e.touches[0].clientY;
-      pulling = true;
-    }
-  }, { passive: true });
-  // passive:false so we can preventDefault() and stop the browser stealing the gesture
-  panel.addEventListener('touchmove', e => {
-    if (!pulling) return;
-    const dy = e.touches[0].clientY - startY;
-    if (dy <= 0) { pulling = false; return; }
-    e.preventDefault();
-    dist = dy;
-    const pull = $('lbpull');
-    pull.style.display = 'block';
-    pull.style.opacity = String(Math.min(dy / THRESHOLD, 1));
-    pull.textContent = dy >= THRESHOLD ? '↑ release to refresh' : '↓ pull to refresh';
-  }, { passive: false });
-  panel.addEventListener('touchend', () => {
-    if (!pulling) return;
-    pulling = false;
-    if (dist >= THRESHOLD) {
-      $('lbpull').textContent = '↻ refreshing…';
-      lbRefresh();
-    } else {
-      $('lbpull').style.display = 'none';
-    }
-    dist = 0;
-  });
-}
+$('lbrefresh').onclick = () => lbRefresh();
 
 lbbtn.onclick = () => { lbOverlay.classList.add('open'); lbRefresh(); };
 
