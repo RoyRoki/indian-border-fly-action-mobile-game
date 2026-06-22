@@ -1533,8 +1533,11 @@ function mpRenderResults(results, waiting, totalPlayers) {
     const rk = r.rank || (i + 1);
     const w = r.mpWins || 0;
     const l = r.mpLosses || 0;
+    const rankCell = waiting
+      ? `<span class="rank" style="opacity:0.25">—</span>`
+      : `<span class="rank">${medals[rk - 1] || rk}</span>`;
     return `<div class="row${me ? ' me' : ''}">
-      <span class="rank">${medals[rk - 1] || rk}</span>
+      ${rankCell}
       <span class="who">${esc(r.players?.name || 'PILOT')} <small>· ${esc(r.players?.city || '—')}</small></span>
       <span class="pts">${(r.score || 0).toLocaleString()}</span>
     </div>
