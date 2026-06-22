@@ -2053,6 +2053,12 @@ function loop(now) {
 
   // Multiplayer: broadcast position/score/hp to opponents at ~20 fps
   if (mp.phase === 'playing' && mode === 1) {
+    // Redundant last-survivor check every frame so a dropped broadcast never
+    // leaves the survivor playing alone indefinitely
+    const _others = Object.values(mp.others);
+    if (_others.length > 0 && _others.every(p => !p.alive)) {
+      mpEndMatch(score, false);
+    }
     mp.myWaves = Math.max(mp.myWaves, wave);
     const now2 = performance.now();
     if (now2 - mp._lastBcast > 30 && mp.channel) {
