@@ -186,10 +186,8 @@ export async function GET(request) {
       : merged.findIndex(e => e.key === `${qName}|${qCity}`);
     if (idx !== -1) {
       myRank = idx + 1;
-      if (idx >= 10) {
-        const { key: _k, uid: _u, ...rest } = merged[idx];
-        myEntry = rest;
-      }
+      const { key: _k, uid: _u, ...rest } = merged[idx];
+      myEntry = rest;
     }
   }
 

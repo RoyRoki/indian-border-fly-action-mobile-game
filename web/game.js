@@ -497,11 +497,34 @@ async function loadProfile() {
   }
 }
 
+// After sign-in, blob scores (played before Google auth) may hold higher wins/dia
+// than the Supabase players table. Fetch the leaderboard entry (which merges both)
+// and heal the profile if it finds a higher value.
+async function healProfileFromLeaderboard() {
+  if (!sbSession?.user?.id || !profile?.name) return;
+  try {
+    const uid  = sbSession.user.id;
+    const qs   = `?uid=${encodeURIComponent(uid)}&name=${encodeURIComponent(profile.name)}&city=${encodeURIComponent(profile.city || '')}`;
+    const { myEntry } = await (await fetch('/api/leaderboard' + qs)).json();
+    if (!myEntry) return;
+    const newWins = Math.min(5, Math.max(wins,     myEntry.wins || 0));
+    const newDia  = Math.min(5, Math.max(diamonds, myEntry.dia  || 0));
+    if (newWins > wins || newDia > diamonds) {
+      wins     = newWins;
+      diamonds = newDia;
+      localStorage.setItem(winsKey, String(wins));
+      localStorage.setItem(diaKey,  String(diamonds));
+      saveProfileToSupabase();
+    }
+  } catch { /* network error — ignore, will retry next sign-in */ }
+}
+
 async function handleSession(session) {
   sbSession = session;
   updateSigninBtn();
   if (session) {
     await loadProfile();
+    healProfileFromLeaderboard(); // fire-and-forget: heals wins/dia from pre-auth blob scores
     updateSigninBtn();
     // Subscribe to personal notifications and pre-load friends
     if (session.user?.id) {
