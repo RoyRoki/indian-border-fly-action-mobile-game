@@ -1370,8 +1370,16 @@ async function mpJoinChannel(code) {
       const myId = sbSession?.user?.id;
       if ((mp.phase === 'playing' || mp.phase === 'results') && payload.pid && payload.pid !== myId) {
         const prev = mp.others[payload.pid];
-        // preserve smooth render position so lerp can interpolate from where ghost was
         mp.others[payload.pid] = { ...payload, rx: prev?.rx ?? payload.x, ry: prev?.ry ?? payload.y };
+
+        // Last-survivor check: if every other known player is done, end my game too
+        if (mp.phase === 'playing') {
+          const others = Object.values(mp.others);
+          if (others.length > 0 && others.every(p => !p.alive)) {
+            const hudNow = mem().subarray(HUD_PTR, HUD_PTR + 4);
+            mpEndMatch(hudNow[1] | 0, hudNow[0] === 3);
+          }
+        }
       }
     })
     .subscribe(async (status) => {
