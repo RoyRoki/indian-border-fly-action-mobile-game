@@ -1358,6 +1358,14 @@ async function mpJoinChannel(code) {
     .on('presence', { event: 'join' }, () => mpUpdateLobby())
     .on('presence', { event: 'leave' }, () => mpUpdateLobby())
     .on('broadcast', { event: 'MATCH_START' }, ({ payload }) => mpStartMatch(payload))
+    .on('broadcast', { event: 'LEVEL_COMPLETE' }, ({ payload }) => {
+      // Another pilot killed the boss — stop this player's game immediately
+      if (mp.phase !== 'playing') return;
+      const hudNow = mem().subarray(HUD_PTR, HUD_PTR + 4);
+      const currentScore = hudNow[1] | 0;
+      const alsoWon      = hudNow[0] === 3; // this client also reached mode=complete
+      mpEndMatch(currentScore, alsoWon);
+    })
     .on('broadcast', { event: 'PLAYER_STATE' }, ({ payload }) => {
       const myId = sbSession?.user?.id;
       if ((mp.phase === 'playing' || mp.phase === 'results') && payload.pid && payload.pid !== myId) {
@@ -2008,6 +2016,11 @@ function loop(now) {
   }
   if ((mode === 2 || mode === 3) && lastMode === 1) {
     if (mp.phase === 'playing') {
+      // Boss killed → tell all other players to stop immediately
+      if (mode === 3 && mp.channel) {
+        mp.channel.send({ type: 'broadcast', event: 'LEVEL_COMPLETE',
+          payload: { pid: sbSession?.user?.id, name: profile?.name || 'PILOT' } });
+      }
       mpEndMatch(score, mode === 3);
     } else {
       maybeSubmit(score, sector);

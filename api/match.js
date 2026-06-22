@@ -98,27 +98,36 @@ export async function POST(request) {
     score: s, kills: k, waves_cleared: w, survived: !!survived, play_time_s: t,
   });
 
-  // Fetch all results + room size in parallel; rank by score order (no serial row-by-row updates)
+  // Fetch all results + room size in parallel.
+  // Ranking: boss killers (survived=true) first, then by score within each group.
+  // "who scores more wins" — among players who both killed the boss, higher score wins.
   const [{ data: rawRows }, { count: roomSize }] = await Promise.all([
     supabase.from('match_results')
       .select('player_id, score, kills, waves_cleared, survived, play_time_s, players(name, city)')
       .eq('match_id', matchId)
-      .order('score', { ascending: false }),
+      .order('survived', { ascending: false })   // boss killers first
+      .order('score',    { ascending: false }),   // higher score wins within same tier
     supabase.from('room_players').select('id', { count: 'exact', head: true }).eq('room_id', match.room_id),
   ]);
 
   const allSubmitted = (rawRows?.length || 0) >= (roomSize || 0);
 
-  // Close match when everyone has submitted — fire-and-forget so it doesn't delay response
+  // Rank is position in the sorted array
+  const rankedRows = (rawRows || []).map((r, i) => ({ ...r, rank: i + 1 }));
+
+  // Close match + persist final ranks (fire-and-forget — doesn't delay response)
   if (allSubmitted) {
     Promise.all([
       supabase.from('matches').update({ ended_at: new Date().toISOString() }).eq('id', matchId),
       supabase.from('rooms').update({ status: 'done' }).eq('id', match.room_id),
+      // Persist ranks so W/L history is accurate
+      ...rankedRows.map(r =>
+        supabase.from('match_results').update({ rank: r.rank })
+          .eq('match_id', matchId).eq('player_id', r.player_id)
+      ),
     ]).catch(() => {});
   }
 
-  // Rank is position in score-ordered array
-  const rankedRows = (rawRows || []).map((r, i) => ({ ...r, rank: i + 1 }));
   const results = await attachWL(rankedRows);
   const myRank = results.findIndex(r => r.player_id === user.id) + 1 || null;
 
