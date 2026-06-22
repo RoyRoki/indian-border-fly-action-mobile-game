@@ -507,8 +507,10 @@ async function healProfileFromLeaderboard() {
     const qs   = `?uid=${encodeURIComponent(uid)}&name=${encodeURIComponent(profile.name)}&city=${encodeURIComponent(profile.city || '')}`;
     const { myEntry } = await (await fetch('/api/leaderboard' + qs)).json();
     if (!myEntry) return;
-    const newWins = Math.min(5, Math.max(wins,     myEntry.wins || 0));
+    let newWins   = Math.min(5, Math.max(wins,     myEntry.wins || 0));
     const newDia  = Math.min(5, Math.max(diamonds, myEntry.dia  || 0));
+    // Diamonds prove the player once had 5 border wins (same rule as loadProfile heal)
+    if (newDia > 0 && newWins < 5) newWins = 5;
     if (newWins > wins || newDia > diamonds) {
       wins     = newWins;
       diamonds = newDia;
